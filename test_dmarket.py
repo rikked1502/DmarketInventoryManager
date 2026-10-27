@@ -61,6 +61,27 @@ class SigningTest(unittest.TestCase):
         self.verify(req, "POST/marketplace-api/v2/offers:batchCreate" + body + "1700000000")
         self.assertEqual(res, {"ok": 1, "failed": []})
 
+    def test_batch_chunks_and_retries_failures_once(self):
+        calls = []
+
+        def urlopen(req, timeout):
+            ids = [r["assetId"] for r in json.loads(req.data)["requests"]]
+            calls.append(ids)
+            if len(calls) == 1:  # first chunk: two items refused
+                return FakeResponse({"offers": [{} for _ in ids[2:]], "failed": [{"assetId": i, "code": "158"} for i in ids[:2]]})
+            if len(calls) == 2:  # second chunk: whole request errors out
+                raise dmarket.urllib.error.URLError("boom")
+            return FakeResponse({"offers": [{} for _ in ids[1:]], "failed": [{"assetId": ids[0], "code": "158"}]})
+
+        items = [{"assetId": f"a{i}", "priceCents": 10} for i in range(25)]
+        with mock.patch("urllib.request.urlopen", urlopen), mock.patch("time.sleep") as sleep:
+            res = dmarket.Client(PUBLIC, SECRET).create_offers(items)
+        self.assertEqual([len(c) for c in calls], [20, 5, 7])  # 20 + 5, then retry of 2 + 5 failures
+        self.assertEqual(calls[2], ["a0", "a1", "a20", "a21", "a22", "a23", "a24"])
+        self.assertEqual(res["ok"], 18 + 6)
+        self.assertEqual([f["assetId"] for f in res["failed"]], ["a0"])
+        self.assertEqual(sleep.call_count, 2)
+
     def test_rejects_non_positive_price(self):
         with self.assertRaises(dmarket.DMarketError):
             dmarket.Client(PUBLIC, SECRET).create_offers([{"assetId": "a1", "priceCents": 0}])

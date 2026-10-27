@@ -10,6 +10,7 @@ from nacl.signing import SigningKey
 
 API = "https://api.dmarket.com"
 GAMES = {"a8db", "tf2"}  # CS2, Team Fortress 2
+BATCH_SIZE, CHUNK_PAUSE, RETRY_PAUSE = 20, 1.0, 3.0  # seconds
 
 
 class DMarketError(Exception):
@@ -176,30 +177,56 @@ class Client:
     def best_prices(self, game, titles):
         """{title: lowest offer price in cents} for the given exact titles."""
         _check_game(game)
-        titles, out = list(dict.fromkeys(titles)), {}
+        titles = list(dict.fromkeys(titles))
+        out = {t: {"low": None, "high": None} for t in titles}
         for i in range(0, len(titles), 100):
             chunk = titles[i:i + 100]
-            r = self.call("POST", "/marketplace-api/v1/aggregated-prices",
-                          body={"filter": {"game": game, "titles": chunk}, "limit": str(len(chunk))})
+            r = self.call("POST", "/marketplace-api/v1/aggregated-prices", body={
+                "filter": {"game": game, "titles": chunk, "includeP2p": False}, "limit": str(len(chunk))})
             for p in r.get("aggregatedPrices") or []:
                 amount = _amount(p.get("offerBestPrice"))
-                out[p.get("title")] = int(amount) if amount not in (None, "") else None
+                if p.get("title") in out and amount not in (None, ""):
+                    out[p["title"]]["low"] = int(amount) or None
+        for t in titles:
+            # title filter is a prefix match, so keep only exact titles.
+            # shortcut: looks at the 100 priciest prefix matches, enough unless a title prefixes many pricier ones.
+            r = self.call("GET", "/marketplace-api/v2/offers", {
+                "gameId": game, "title": t, "orderBy": "price", "orderDir": "desc", "limit": 100})
+            out[t]["high"] = next((int(o.get("priceCents") or 0) or None for o in r.get("items") or []
+                                   if (o.get("attributes") or {}).get("title") == t), None)
         return out
 
-    def _batch(self, path, requests):
-        r = self.call("POST", path, body={"requests": requests})
-        return {"ok": len(r.get("offers") or []), "failed": r.get("failed") or []}
+    def _batch(self, path, requests, id_key):
+        """Send in small chunks with a pause, then retry failures once: big batches get refused by DMarket."""
+        ok, failed, pending = 0, {}, requests
+        for attempt in range(2):
+            failed = {}
+            for i in range(0, len(pending), BATCH_SIZE):
+                if i or attempt:
+                    time.sleep(RETRY_PAUSE if attempt and not i else CHUNK_PAUSE)
+                chunk = pending[i:i + BATCH_SIZE]
+                try:
+                    r = self.call("POST", path, body={"requests": chunk})
+                except DMarketError as e:  # keep earlier chunks' results; report this chunk as failed
+                    failed.update({req[id_key]: {id_key: req[id_key], "code": "", "message": str(e)} for req in chunk})
+                    continue
+                ok += len(r.get("offers") or [])
+                failed.update({f.get(id_key): f for f in r.get("failed") or []})
+            if not failed:
+                break
+            pending = [req for req in requests if req[id_key] in failed]
+        return {"ok": ok, "failed": list(failed.values())}
 
     def create_offers(self, items):
         """items: [{assetId, priceCents}]"""
-        return self._batch("/marketplace-api/v2/offers:batchCreate", _check_prices(items, "assetId"))
+        return self._batch("/marketplace-api/v2/offers:batchCreate", _check_prices(items, "assetId"), "assetId")
 
     def update_offers(self, items):
         """items: [{offerId, priceCents}]"""
-        return self._batch("/marketplace-api/v2/offers:batchUpdate", _check_prices(items, "offerId"))
+        return self._batch("/marketplace-api/v2/offers:batchUpdate", _check_prices(items, "offerId"), "offerId")
 
     def delete_offers(self, offer_ids):
-        return self._batch("/marketplace-api/v2/offers:batchDelete", [{"offerId": str(i)} for i in offer_ids])
+        return self._batch("/marketplace-api/v2/offers:batchDelete", [{"offerId": str(i)} for i in offer_ids], "offerId")
 
     # --- history -------------------------------------------------------------
 

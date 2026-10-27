@@ -142,7 +142,12 @@
     </div>
   </dialog>
 
-  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden>
+    <span id="toast-text"></span>
+    <button class="icon-btn toast-close" id="toast-close" type="button" aria-label="Dismiss message">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
 
   <script src="app.js"></script>
 </body>

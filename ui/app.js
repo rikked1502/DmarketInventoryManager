@@ -23,12 +23,13 @@ const state = {
 let toastTimer;
 function toast(msg, error = false) {
   const t = $("#toast");
-  t.textContent = msg;
+  $("#toast-text").textContent = msg;
   t.className = "toast" + (error ? " error" : "");
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.hidden = true), error ? 10000 : 6000);
+  if (!error) toastTimer = setTimeout(() => (t.hidden = true), 6000);
 }
+$("#toast-close").addEventListener("click", () => ($("#toast").hidden = true));
 
 // count > 1: a group row (title × count); otherwise one item with its details underneath.
 function itemCell(r, count = 1, expander = "") {
@@ -276,22 +277,23 @@ function openDialog(cfg) {
   $("#dlg-title").textContent = cfg.title;
   $("#dlg-desc").textContent = cfg.desc;
   $("#dlg-head").innerHTML = cfg.priced
-    ? `<th>Item</th><th class="num">${cfg.refLabel}</th><th class="num">Lowest listing</th><th class="num">Your price each ($)</th>`
+    ? `<th>Item</th><th class="num">${cfg.refLabel}</th><th class="num">Lowest on DMarket</th><th class="num">Highest on DMarket</th><th class="num">Your price each ($)</th>`
     : `<th>Item</th><th class="num">Price</th>`;
   $("#dlg-body").innerHTML = cfg.groups.map((g) =>
     `<tr><td>${itemCell(g.items[0], g.items.length)}</td>` + (cfg.priced
-      ? `<td class="num">${range(g.items.map((r) => r.ref))}</td><td class="num market">…</td>` +
+      ? `<td class="num">${range(g.items.map((r) => r.ref))}</td><td class="num market">…</td><td class="num market-high">…</td>` +
         `<td class="num"><input class="price-input" inputmode="decimal" aria-label="Price each for ${esc(g.title)}" value="${g.cents ? (g.cents / 100).toFixed(2) : ""}"></td>`
       : `<td class="num">${range(g.items.map((r) => r.cents))}</td>`) + "</tr>").join("");
   syncDialog();
   dlg.showModal();
   if (cfg.priced) {
     api().best_prices(state.game, cfg.groups.map((g) => g.title))
-      .then((m) => cfg.groups.forEach((g) => (g.market = m[g.title] ?? null)))
+      .then((m) => cfg.groups.forEach((g) => { g.market = m[g.title]?.low ?? null; g.high = m[g.title]?.high ?? null; }))
       .catch(() => {})
       .finally(() => {
         if (dlg.cfg !== cfg) return;
         dlg.querySelectorAll(".market").forEach((td, i) => (td.textContent = money(cfg.groups[i].market)));
+        dlg.querySelectorAll(".market-high").forEach((td, i) => (td.textContent = money(cfg.groups[i].high)));
         syncDialog();
       });
   }
@@ -336,10 +338,17 @@ function readPrices() {
 
 function report(res, cfg) {
   const titles = Object.fromEntries(cfg.rows.map((r) => [r.id, r.title]));
-  const failed = res.failed || [];
+  const failed = res.failed || [], lines = new Map();
+  for (const f of failed) {
+    const reason = f.message || (f.code ? `error ${f.code}` : "unknown error");
+    const title = titles[f.assetId || f.offerId] || "Item", key = JSON.stringify([title, reason]);
+    if (!lines.has(key)) lines.set(key, { title, reason, n: 0 });
+    lines.get(key).n++;
+  }
   let msg = `${cfg.pastVerb} ${plural(res.ok, "item")}.`;
   if (failed.length) {
-    msg += `\n${failed.length} failed:\n` + failed.map((f) => `• ${titles[f.assetId || f.offerId] || "Item"}: ${f.message || f.code}`).join("\n");
+    msg += `\n${failed.length} failed (already retried once):\n` +
+      [...lines.values()].map((l) => `• ${l.title}${l.n > 1 ? ` ×${l.n}` : ""}: ${l.reason}`).join("\n");
   }
   toast(msg, failed.length > 0);
 }
