@@ -82,6 +82,26 @@ class SigningTest(unittest.TestCase):
         self.assertEqual([f["assetId"] for f in res["failed"]], ["a0"])
         self.assertEqual(sleep.call_count, 2)
 
+    def test_create_target_body_and_failure(self):
+        sent, urlopen = capture({"Result": [{"Successful": False, "Error": {"Code": "NotEnoughBalance", "Message": "Not enough balance"}}]})
+        with mock.patch("urllib.request.urlopen", urlopen):
+            res = dmarket.Client(PUBLIC, SECRET).create_target("a8db", "Clutch Case", 5, 38)
+        self.assertEqual(json.loads(sent["req"].data), {"GameID": "a8db", "Targets": [
+            {"Title": "Clutch Case", "Amount": "5", "Price": {"Currency": "USD", "Amount": 0.38}}]})
+        self.assertEqual(res, {"ok": 0, "failed": [{"title": "Clutch Case", "code": "NotEnoughBalance", "message": "Not enough balance"}]})
+        for bad in (("", 1, 38), ("Clutch Case", 0, 38), ("Clutch Case", 101, 38), ("Clutch Case", 1, 0)):
+            with self.assertRaises(dmarket.DMarketError):
+                dmarket.Client(PUBLIC, SECRET).create_target("a8db", *bad)
+
+    def test_delete_targets_counts_results(self):
+        sent, urlopen = capture({"Result": [
+            {"DeleteTarget": {"TargetID": "t1"}, "Successful": True},
+            {"DeleteTarget": {"TargetID": "t2"}, "Successful": False, "Error": {"Code": "BadRequest", "Message": "gone"}}]})
+        with mock.patch("urllib.request.urlopen", urlopen):
+            res = dmarket.Client(PUBLIC, SECRET).delete_targets(["t1", "t2"])
+        self.assertEqual(json.loads(sent["req"].data), {"Targets": [{"TargetID": "t1"}, {"TargetID": "t2"}]})
+        self.assertEqual(res, {"ok": 1, "failed": [{"targetId": "t2", "code": "BadRequest", "message": "gone"}]})
+
     def test_rejects_non_positive_price(self):
         with self.assertRaises(dmarket.DMarketError):
             dmarket.Client(PUBLIC, SECRET).create_offers([{"assetId": "a1", "priceCents": 0}])

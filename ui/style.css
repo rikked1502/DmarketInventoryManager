@@ -164,7 +164,10 @@ dialog::backdrop { background: rgb(2 6 23 / .6); }
 dialog h2 { margin: 0 0 4px; font-size: 18px; }
 .dlg-table { max-height: 50vh; }
 .price-input { width: 110px; text-align: right; }
-.price-input[aria-invalid="true"] { border-color: var(--danger); }
+.new-target input[type="search"] { width: 320px; }
+.new-target .qty-input { width: 64px; }
+input[aria-invalid="true"] { border-color: var(--danger); }
+.form-error { color: var(--danger); }
 .price-input:disabled { background: transparent; border-color: transparent; color: var(--fg); opacity: 1; }
 tr.low td { color: var(--warn); }
 .warn { color: var(--warn); min-height: 1.5em; margin: 12px 0 0; }

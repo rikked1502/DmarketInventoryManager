@@ -52,6 +52,7 @@
     <nav class="tabs" role="tablist" aria-label="Sections">
       <button role="tab" id="tab-inventory" aria-controls="panel-inventory" aria-selected="true">Inventory</button>
       <button role="tab" id="tab-offers" aria-controls="panel-offers" aria-selected="false" tabindex="-1">My offers</button>
+      <button role="tab" id="tab-targets" aria-controls="panel-targets" aria-selected="false" tabindex="-1">Buy orders</button>
       <button role="tab" id="tab-history" aria-controls="panel-history" aria-selected="false" tabindex="-1">Transactions</button>
     </nav>
 
@@ -98,6 +99,34 @@
         </table>
       </div>
       <button class="btn more" id="offers-more" type="button" hidden>Load more</button>
+    </section>
+
+    <section id="panel-targets" role="tabpanel" aria-labelledby="tab-targets" hidden>
+      <form class="toolbar new-target" id="target-form" novalidate>
+        <label class="field-inline"><span>New buy order</span>
+          <input id="target-title" type="search" list="target-titles" placeholder="Exact item name" required></label>
+        <datalist id="target-titles"></datalist>
+        <label class="field-inline"><span>Qty</span><input id="target-qty" class="price-input qty-input" inputmode="numeric" value="1" required></label>
+        <label class="field-inline"><span>Price each ($)</span><input id="target-price" class="price-input" inputmode="decimal" required></label>
+        <button class="btn primary" type="submit">Create…</button>
+        <span class="muted small" id="target-market" aria-live="polite"></span>
+      </form>
+      <div class="toolbar">
+        <label class="search"><span class="sr-only">Search buy orders</span><input id="targets-search" type="search" placeholder="Search by title…"></label>
+        <span class="count" id="targets-count"></span>
+        <div class="spacer"></div>
+        <button class="btn danger" id="target-remove-btn" type="button" disabled>Remove</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th class="check"><input type="checkbox" id="targets-all" aria-label="Select all buy orders"></th>
+            <th>Item</th><th class="num">Wanted</th><th class="num">Price each</th><th>Status</th><th>Created</th>
+          </tr></thead>
+          <tbody id="targets-body"></tbody>
+        </table>
+      </div>
+      <button class="btn more" id="targets-more" type="button" hidden>Load more</button>
     </section>
 
     <section id="panel-history" role="tabpanel" aria-labelledby="tab-history" hidden>

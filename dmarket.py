@@ -175,10 +175,10 @@ class Client:
         return {"items": items, "cursor": r.get("cursor", ""), "total": int(r.get("total") or 0)}
 
     def best_prices(self, game, titles):
-        """{title: lowest offer price in cents} for the given exact titles."""
+        """{title: {low, high, bid}} in cents: cheapest and priciest DMarket listing, best buy order."""
         _check_game(game)
         titles = list(dict.fromkeys(titles))
-        out = {t: {"low": None, "high": None} for t in titles}
+        out = {t: {"low": None, "high": None, "bid": None} for t in titles}
         for i in range(0, len(titles), 100):
             chunk = titles[i:i + 100]
             r = self.call("POST", "/marketplace-api/v1/aggregated-prices", body={
@@ -187,6 +187,9 @@ class Client:
                 amount = _amount(p.get("offerBestPrice"))
                 if p.get("title") in out and amount not in (None, ""):
                     out[p["title"]]["low"] = int(amount) or None
+                bid = _amount(p.get("orderBestPrice"))
+                if p.get("title") in out and bid not in (None, ""):
+                    out[p["title"]]["bid"] = int(bid) or None
         for t in titles:
             # title filter is a prefix match, so keep only exact titles.
             # shortcut: looks at the 100 priciest prefix matches, enough unless a title prefixes many pricier ones.
@@ -227,6 +230,62 @@ class Client:
 
     def delete_offers(self, offer_ids):
         return self._batch("/marketplace-api/v2/offers:batchDelete", [{"offerId": str(i)} for i in offer_ids], "offerId")
+
+    # --- buy orders (targets) -------------------------------------------------
+
+    def targets(self, game, title="", cursor=""):
+        _check_game(game)
+        r = self.call("GET", "/marketplace-api/v2/user/targets", {
+            "gameId": game, "limit": 100, "title": title, "cursor": cursor,
+            "orderBy": "createdAt", "orderDir": "desc",
+        })
+        items = []
+        for it in r.get("items") or []:
+            a = it.get("attributes") or {}
+            items.append({
+                "id": it.get("targetId"),
+                "title": it.get("title") or a.get("title", ""),
+                "image": a.get("image", ""),
+                "details": details(a),
+                "amount": int(it.get("amount") or 0),
+                "priceCents": int(it.get("priceCents") or 0),
+                "active": it.get("status") == "TARGET_STATUS_ACTIVE",
+                "createdAt": it.get("createdAt", ""),
+            })
+        return {"items": items, "cursor": r.get("cursor", ""), "total": int(r.get("total") or 0)}
+
+    def create_target(self, game, title, amount, price_cents):
+        """One buy order for `amount` copies of an exact title. Returns {ok, failed} like the offer batches."""
+        _check_game(game)
+        amount, price_cents = int(amount), int(price_cents)
+        if not title or not 1 <= amount <= 100 or price_cents <= 0:
+            raise DMarketError("A buy order needs an exact item name, a quantity of 1-100 and a price above $0.00")
+        r = self.call("POST", "/marketplace-api/v1/user-targets/create", body={"GameID": game, "Targets": [
+            {"Title": title, "Amount": str(amount), "Price": {"Currency": "USD", "Amount": price_cents / 100}}]})
+        res = (r.get("Result") or [{}])[0]
+        if res.get("Successful"):
+            return {"ok": 1, "failed": []}
+        err = res.get("Error") or {}
+        return {"ok": 0, "failed": [{"title": title, "code": err.get("Code", ""), "message": err.get("Message", "")}]}
+
+    def delete_targets(self, target_ids):
+        ok, failed = 0, []
+        for i in range(0, len(target_ids), 100):
+            chunk = [str(t) for t in target_ids[i:i + 100]]
+            try:
+                r = self.call("POST", "/marketplace-api/v1/user-targets/delete",
+                              body={"Targets": [{"TargetID": t} for t in chunk]})
+            except DMarketError as e:  # keep earlier chunks' results; report this chunk as failed
+                failed += [{"targetId": t, "code": "", "message": str(e)} for t in chunk]
+                continue
+            for res in r.get("Result") or []:
+                if res.get("Successful"):
+                    ok += 1
+                else:
+                    err = res.get("Error") or {}
+                    failed.append({"targetId": (res.get("DeleteTarget") or {}).get("TargetID", ""),
+                                   "code": err.get("Code", ""), "message": err.get("Message", "")})
+        return {"ok": ok, "failed": failed}
 
     # --- history -------------------------------------------------------------
 

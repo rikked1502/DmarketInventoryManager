@@ -98,6 +98,15 @@ class Api:
     def delete_offers(self, offer_ids):
         return self._c().delete_offers(offer_ids)
 
+    def targets(self, game, title, cursor):
+        return self._c().targets(game, title, cursor)
+
+    def create_target(self, game, title, amount, price_cents):
+        return self._c().create_target(game, title, amount, price_cents)
+
+    def delete_targets(self, target_ids):
+        return self._c().delete_targets(target_ids)
+
     def history(self, kind, cursor):
         return self._c().history(kind, cursor)
 

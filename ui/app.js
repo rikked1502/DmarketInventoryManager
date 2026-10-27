@@ -7,7 +7,7 @@ const money = (c) => (c == null ? "—" : (c < 0 ? "−" : "") + "$" + (Math.abs
 const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
 const errMsg = (e) => (e && e.message) || String(e);
 const STATUS = { successful: "Completed", reverted: "Reverted", trade_protected: "Trade protected" };
-const TABS = ["inventory", "offers", "history"];
+const TABS = ["inventory", "offers", "targets", "history"];
 
 const state = {
   game: "a8db",
@@ -15,6 +15,7 @@ const state = {
   loaded: new Set(),
   inventory: { rows: [], cursor: "", sel: new Set(), open: new Set(), req: 0 },
   offers: { rows: [], cursor: "", sel: new Set(), open: new Set(), req: 0 },
+  targets: { rows: [], cursor: "", sel: new Set(), open: new Set(), req: 0 },
   history: { req: 0, kinds: [] },
 };
 const working = new Set(); // ids with a background list/reprice/remove still running
@@ -59,6 +60,11 @@ function range(values) {
 const PAD = '<span class="expander-pad"></span>'; // keeps single items aligned with group rows
 const CHEVRON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>';
 
+function newestDate(rs) {
+  const newest = rs.map((r) => r.createdAt).filter(Boolean).sort().pop();
+  return newest ? new Date(newest).toLocaleDateString() : "—";
+}
+
 function refreshBalance() {
   api().balance().then((c) => ($("#balance").textContent = money(c))).catch(() => {});
 }
@@ -80,11 +86,19 @@ const LISTS = {
   offers: {
     fetch: (cursor) => api().offers(state.game, $("#offers-search").value.trim(), cursor),
     selectable: (r) => !working.has(r.id),
-    cells: (rs) => {
-      const newest = rs.map((r) => r.createdAt).filter(Boolean).sort().pop();
-      return `<td class="num">${range(rs.map((r) => r.priceCents))}</td><td>${newest ? new Date(newest).toLocaleDateString() : "—"}</td>`;
-    },
+    cells: (rs) => `<td class="num">${range(rs.map((r) => r.priceCents))}</td><td>${newestDate(rs)}</td>`,
     empty: "No active offers.",
+  },
+  targets: {
+    fetch: (cursor) => api().targets(state.game, $("#targets-search").value.trim(), cursor),
+    selectable: (r) => !working.has(r.id),
+    cells: (rs) =>
+      `<td class="num">${rs.reduce((n, r) => n + r.amount, 0)}</td><td class="num">${range(rs.map((r) => r.priceCents))}</td>` +
+      `<td>${[...new Set(rs.map((r) => r.active))].map((a) => a
+        ? '<span class="badge dm">Active</span>'
+        : '<span class="badge" title="Not matching sellers right now, e.g. when your balance is too low">Inactive</span>').join(" ")}</td>` +
+      `<td>${newestDate(rs)}</td>`,
+    empty: "No buy orders.",
   },
 };
 
@@ -140,7 +154,8 @@ function renderList(name, loading = false) {
     }).join("") : "";
     return head + kids;
   }).join("");
-  $(`#${name}-body`).innerHTML = html || `<tr class="empty"><td colspan="4">${loading ? "Loading…" : L.empty}</td></tr>`;
+  const cols = $(`#${name}-body`).closest("table").tHead.rows[0].cells.length;
+  $(`#${name}-body`).innerHTML = html || `<tr class="empty"><td colspan="${cols}">${loading ? "Loading…" : L.empty}</td></tr>`;
   $(`#${name}-body`).querySelectorAll("[data-mixed]").forEach((c) => (c.indeterminate = true));
   const more = $(`#${name}-more`);
   more.hidden = loading || s.busy || !s.cursor;
@@ -161,8 +176,10 @@ function syncSelection(name) {
   if (name === "inventory") {
     $("#list-btn").disabled = !n;
     $("#list-btn").textContent = n ? `List for sale (${n})` : "List for sale";
-  } else {
+  } else if (name === "offers") {
     $("#reprice-btn").disabled = $("#remove-btn").disabled = !n;
+  } else {
+    $("#target-remove-btn").disabled = !n;
   }
 }
 
@@ -175,7 +192,7 @@ function rerender(name, focusSelector) {
   if (el) el.focus();
 }
 
-for (const name of ["inventory", "offers"]) {
+for (const name of Object.keys(LISTS)) {
   $(`#${name}-body`).addEventListener("change", (e) => {
     const s = state[name], { id, group } = e.target.dataset;
     if (id != null) {
@@ -306,7 +323,7 @@ function syncDialog() {
   $("#dlg-back").hidden = !(cfg.priced && review);
   const total = cfg.rows.reduce((a, r) => a + (r.cents || 0), 0);
   const primary = $("#dlg-primary");
-  primary.textContent = review ? `${cfg.verb} ${plural(cfg.rows.length, "item")} · ${money(total)}` : "Review";
+  primary.textContent = review ? `${cfg.verb} ${plural(cfg.rows.length, cfg.noun || "item")} · ${money(total)}` : "Review";
   primary.className = "btn " + (cfg.danger ? "danger" : "primary");
   // Typo guard: flag prices far below the market (or the reference price when there is no market).
   let low = 0;
@@ -317,7 +334,7 @@ function syncDialog() {
     tr.classList.toggle("low", isLow);
     low += isLow;
   });
-  setWarn(low ? `${plural(low, "price")} more than 30% below the market price. Check before confirming.` : "");
+  setWarn(low ? `${plural(low, "price")} more than 30% below the market price. Check before confirming.` : cfg.warn || "");
 }
 
 function readPrices() {
@@ -342,13 +359,13 @@ function report(res, cfg) {
   const failed = res.failed || [], lines = new Map();
   for (const f of failed) {
     const reason = f.message || (f.code ? `error ${f.code}` : "unknown error");
-    const title = titles[f.assetId || f.offerId] || "Item", key = JSON.stringify([title, reason]);
+    const title = titles[f.assetId || f.offerId || f.targetId] || f.title || "Item", key = JSON.stringify([title, reason]);
     if (!lines.has(key)) lines.set(key, { title, reason, n: 0 });
     lines.get(key).n++;
   }
-  let msg = `${cfg.pastVerb} ${plural(res.ok, "item")}.`;
+  let msg = `${cfg.pastVerb} ${plural(res.ok, cfg.noun || "item")}.`;
   if (failed.length) {
-    msg += `\n${failed.length} failed (already retried once):\n` +
+    msg += `\n${failed.length} failed${cfg.noRetry ? "" : " (already retried once)"}:\n` +
       [...lines.values()].map((l) => `• ${l.title}${l.n > 1 ? ` ×${l.n}` : ""}: ${l.reason}`).join("\n");
   }
   toast(msg, failed.length > 0);
@@ -363,9 +380,9 @@ $("#dlg-primary").addEventListener("click", async () => {
   // Run in the background: close now, lock the rows until DMarket answers.
   dlg.close();
   const ids = cfg.rows.map((r) => r.id);
-  ids.forEach((id) => { working.add(id); state.inventory.sel.delete(id); state.offers.sel.delete(id); });
-  for (const name of ["inventory", "offers"]) if (state.loaded.has(name)) renderList(name);
-  toast(`${cfg.workingVerb} ${plural(ids.length, "item")} in the background…`);
+  ids.forEach((id) => { working.add(id); Object.keys(LISTS).forEach((name) => state[name].sel.delete(id)); });
+  for (const name of Object.keys(LISTS)) if (state.loaded.has(name)) renderList(name);
+  toast(`${cfg.workingVerb} ${plural(ids.length, cfg.noun || "item")} in the background…`);
   try {
     report(await cfg.send(cfg.rows), cfg);
   } catch (e) {
@@ -404,6 +421,71 @@ $("#remove-btn").addEventListener("click", () => openDialog({
   done: () => { loadList("offers"); loadList("inventory"); },
 }));
 
+// ---------- buy orders (targets) ----------
+
+let market = {}; // last looked-up title, so typing and Create share one request
+function marketFor(title) {
+  const key = state.game + "\n" + title;
+  if (market.key !== key) market = { key, p: api().best_prices(state.game, [title]).then((m) => m[title], () => null) };
+  return market.p;
+}
+const marketText = (m) => !m ? "Could not load market prices."
+  : m.low == null && m.bid == null ? "No listings or buy orders for this exact name."
+  : `Lowest listing ${money(m.low)} · Best buy order ${money(m.bid)}`;
+
+let marketTimer;
+$("#target-title").addEventListener("input", () => {
+  clearTimeout(marketTimer);
+  $("#target-market").textContent = "";
+  $("#target-market").classList.remove("form-error");
+  const title = $("#target-title").value.trim();
+  if (title) marketTimer = setTimeout(async () => {
+    const m = await marketFor(title);
+    if ($("#target-title").value.trim() === title) $("#target-market").textContent = marketText(m);
+  }, 500);
+});
+// Suggest names already seen in this account's lists; DMarket needs the exact title.
+$("#target-title").addEventListener("focus", () => {
+  const titles = new Set(Object.keys(LISTS).flatMap((name) => state[name].rows.map((r) => r.title)));
+  $("#target-titles").innerHTML = [...titles].sort().map((t) => `<option value="${esc(t)}">`).join("");
+});
+
+$("#target-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const titleIn = $("#target-title"), qtyIn = $("#target-qty"), priceIn = $("#target-price");
+  const title = titleIn.value.trim(), qty = Number(qtyIn.value.trim()), price = priceIn.value.trim().replace(",", ".");
+  const okTitle = !!title, okQty = Number.isInteger(qty) && qty >= 1 && qty <= 100;
+  const okPrice = /^\d+(\.\d{1,2})?$/.test(price) && Number(price) > 0;
+  titleIn.setAttribute("aria-invalid", String(!okTitle));
+  qtyIn.setAttribute("aria-invalid", String(!okQty));
+  priceIn.setAttribute("aria-invalid", String(!okPrice));
+  $("#target-market").classList.toggle("form-error", !okTitle || !okQty || !okPrice);
+  if (!okTitle || !okQty || !okPrice) {
+    $("#target-market").textContent = "Enter the exact item name, a quantity of 1–100 and a price above 0 with up to 2 decimals.";
+    return;
+  }
+  const cents = Math.round(Number(price) * 100), game = state.game, m = await marketFor(title);
+  openDialog({
+    title: "Create buy order",
+    desc: `${marketText(m)}. Sellers can fill your order at this price; it is paid from your balance.`,
+    warn: !m || (m.low == null && m.bid == null) ? "No listings or buy orders found for this name. Check it is the exact DMarket item name."
+      : m.low != null && cents >= m.low ? `This is at or above the cheapest listing (${money(m.low)}). Buying that listing directly may be cheaper.` : "",
+    rows: [{ id: title, title, details: [`${qty} × ${money(cents)}`], cents: qty * cents }],
+    priced: false, noun: "buy order", noRetry: true, verb: "Create", workingVerb: "Creating", pastVerb: "Created",
+    send: () => api().create_target(game, title, qty, cents),
+    done: () => loadList("targets"),
+  });
+});
+
+$("#target-remove-btn").addEventListener("click", () => openDialog({
+  title: "Remove buy orders",
+  desc: "These buy orders will be cancelled. Nothing is bought or sold.",
+  rows: selected("targets").map((r) => ({ ...r, details: [`${r.amount} × ${money(r.priceCents)}`], cents: r.amount * r.priceCents })),
+  priced: false, danger: true, noun: "buy order", noRetry: true, verb: "Remove", workingVerb: "Removing", pastVerb: "Removed",
+  send: (rows) => api().delete_targets(rows.map((r) => r.id)),
+  done: () => loadList("targets"),
+}));
+
 // ---------- tabs, header, theme, boot ----------
 
 function showTab(name) {
@@ -430,8 +512,8 @@ $(".tabs").addEventListener("keydown", (e) => {
 
 $("#game").addEventListener("change", (e) => {
   state.game = e.target.value;
-  state.loaded.delete("inventory");
-  state.loaded.delete("offers");
+  Object.keys(LISTS).forEach((name) => state.loaded.delete(name));
+  $("#target-market").textContent = "";
   if (state.tab !== "history") reload(state.tab);
 });
 
@@ -449,8 +531,9 @@ $("#theme").addEventListener("click", () => setTheme(document.documentElement.da
 
 function resetData() {
   // Bumping req makes any in-flight response from the previous account get dropped.
-  for (const name of ["inventory", "offers"]) Object.assign(state[name], { rows: [], cursor: "", total: 0, req: state[name].req + 1 });
-  for (const name of ["inventory", "offers"]) state[name].sel.clear();
+  for (const name of Object.keys(LISTS)) Object.assign(state[name], { rows: [], cursor: "", total: 0, req: state[name].req + 1 });
+  for (const name of Object.keys(LISTS)) state[name].sel.clear();
+  market = {};
   state.history = { req: state.history.req + 1, kinds: [] };
   state.loaded.clear();
   $("#balance").textContent = "—";

@@ -12,6 +12,8 @@ Supports **Counter-Strike 2** and **Team Fortress 2**, with light and dark theme
 - **List for sale**: select items, start from DMarket's recommended price, see the lowest current listing,
   review, then confirm. Prices more than 30% below market are flagged before you confirm.
 - **My offers**: change prices or remove listings in bulk, always behind a confirmation step.
+- **Buy orders**: create a buy order (exact item name, quantity 1–100, price each) next to the lowest listing and
+  best existing buy order, or remove buy orders in bulk. A price at or above the cheapest listing is flagged.
 - **Transactions**: your sales (with fee and net) and buy-order purchases in one list, filterable by Sold / Bought.
 
 There is no automated trading: nothing changes on your account unless you confirm it.
@@ -60,7 +62,8 @@ The last account you used is remembered.
 - **Transactions** only covers what the API exposes: completed sales (closed offers) and buy-order purchases
   (closed targets). Money deposits and withdrawals, and direct market purchases, are not included.
   History is account-wide across all games.
-- No deposit or withdraw, buy orders management, or buying in this version.
+- No deposit or withdraw, editing existing buy orders, or buying in this version.
+- Buy orders match any copy of the title; float, pattern and phase restrictions are not supported.
 
 ## Project layout
 
