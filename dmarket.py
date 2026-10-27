@@ -35,6 +35,42 @@ def _amount(money):
     return money.get("Amount", money.get("amount"))
 
 
+def details(a):
+    """Short per-item facts that tell copies with the same title apart (float, stickers, unusual effect…)."""
+    cs2, tf2, out = a.get("cs2") or {}, a.get("tf2") or {}, []
+    try:
+        wear = float(cs2.get("float") or 0)
+    except ValueError:
+        wear = 0
+    if wear > 0:
+        out.append(f"Float {wear:.6f}")
+        if cs2.get("paintSeed"):
+            out.append(f"Pattern {cs2['paintSeed']}")
+    if cs2.get("phase"):
+        out.append(cs2["phase"].replace("-", " ").title())
+    stickers = [s.get("name", "").removeprefix("Sticker | ") for s in cs2.get("stickers") or []]
+    if stickers:
+        out.append("Stickers: " + ", ".join(stickers))
+    charms = [c.get("name", "") for c in cs2.get("charms") or []]
+    if charms:
+        out.append("Charm: " + ", ".join(charms))
+    if cs2.get("customName"):
+        out.append(f"Name tag: {cs2['customName']}")
+    if tf2.get("effect"):
+        out.append("Effect: " + tf2["effect"])
+    streak = tf2.get("killstreak") or ""
+    if streak not in ("", "KILLSTREAK_UNSPECIFIED", "KILLSTREAK_NONE"):
+        out.append(streak.removeprefix("KILLSTREAK_").title() + " killstreak")
+    if tf2.get("spells"):
+        out.append("Spells: " + ", ".join(tf2["spells"]))
+    if tf2.get("paintColor"):
+        out.append("Paint: " + tf2["paintColor"])
+    unlock = (a.get("unlockDate") or "")[:19]  # API sends nanoseconds; seconds are enough
+    if unlock and unlock > time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()):
+        out.append(f"Trade locked until {unlock[:10]}")
+    return out
+
+
 def _check_game(game):
     if game not in GAMES:
         raise DMarketError(f"Unsupported game: {game}")
@@ -111,10 +147,10 @@ class Client:
                 "id": a.get("id"),
                 "title": a.get("title", ""),
                 "image": a.get("imageUri", ""),
-                "float": (a.get("cs2") or {}).get("float", ""),
+                "details": details(a),
                 "inMarket": in_market,
                 "sellable": in_market and not a.get("saleRestricted") and not a.get("sellUnavailable"),
-                "recommendedCents": to_cents(_amount(it.get("offerRecommendedPrice"))),
+                "recommendedCents": to_cents(_amount(it.get("offerRecommendedPrice"))) or None,  # 0 = no price known
             })
         return {"items": items, "cursor": r.get("cursor", ""), "total": int(r.get("total") or 0)}
 
@@ -131,7 +167,7 @@ class Client:
                 "id": it.get("offerId"),
                 "title": a.get("title", ""),
                 "image": a.get("imageUri", ""),
-                "float": (a.get("cs2") or {}).get("float", ""),
+                "details": details(a),
                 "priceCents": int(it.get("priceCents") or 0),
                 "createdAt": it.get("createdAt", ""),
             })

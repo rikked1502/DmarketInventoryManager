@@ -13,8 +13,8 @@ const state = {
   game: "a8db",
   tab: "inventory",
   loaded: new Set(),
-  inventory: { rows: [], cursor: "", sel: new Set(), req: 0 },
-  offers: { rows: [], cursor: "", sel: new Set(), req: 0 },
+  inventory: { rows: [], cursor: "", sel: new Set(), open: new Set(), req: 0 },
+  offers: { rows: [], cursor: "", sel: new Set(), open: new Set(), req: 0 },
   history: { req: 0, kinds: [] },
 };
 
@@ -30,11 +30,32 @@ function toast(msg, error = false) {
   toastTimer = setTimeout(() => (t.hidden = true), error ? 10000 : 6000);
 }
 
-function itemCell(r) {
-  const sub = Number(r.float) > 0 ? `<span class="sub">Float ${esc(Number(r.float).toFixed(6))}</span>` : "";
+// count > 1: a group row (title × count); otherwise one item with its details underneath.
+function itemCell(r, count = 1, expander = "") {
+  const qty = count > 1 ? ` <span class="qty">×${count}</span>` : "";
+  const sub = count === 1 && r.details && r.details.length ? `<span class="sub">${esc(r.details.join(" · "))}</span>` : "";
   const img = r.image ? `<img src="${esc(r.image)}" alt="" loading="lazy">` : "";
-  return `<div class="item">${img}<span>${esc(r.title)}${sub}</span></div>`;
+  return `<div class="item">${expander}${img}<span>${esc(r.title)}${qty}${sub}</span></div>`;
 }
+
+function groupByTitle(rows) {
+  const groups = new Map();
+  for (const r of rows) {
+    if (!groups.has(r.title)) groups.set(r.title, []);
+    groups.get(r.title).push(r);
+  }
+  return [...groups.values()];
+}
+
+function range(values) {
+  const v = values.filter((x) => x != null);
+  if (!v.length) return "—";
+  const lo = Math.min(...v), hi = Math.max(...v);
+  return lo === hi ? money(lo) : `${money(lo)} – ${money(hi)}`;
+}
+
+const PAD = '<span class="expander-pad"></span>'; // keeps single items aligned with group rows
+const CHEVRON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>';
 
 function refreshBalance() {
   api().balance().then((c) => ($("#balance").textContent = money(c))).catch(() => {});
@@ -46,18 +67,21 @@ const LISTS = {
   inventory: {
     fetch: (cursor) => api().inventory(state.game, $("#inventory-search").value.trim(), $("#inventory-filter").value === "dmarket", cursor),
     selectable: (r) => r.sellable,
-    row: (r) =>
-      `<td>${itemCell(r)}</td>` +
-      `<td>${r.inMarket ? '<span class="badge dm">DMarket</span>' : '<span class="badge" title="Deposit on dmarket.com to sell">Steam</span>'}</td>` +
-      `<td class="num">${money(r.recommendedCents)}</td>`,
+    // cells after the item column, for one item or a whole group
+    cells: (rs) =>
+      `<td>${[...new Set(rs.map((r) => r.inMarket))].map((m) => m
+        ? '<span class="badge dm">DMarket</span>'
+        : '<span class="badge" title="Deposit on dmarket.com to sell">Steam</span>').join(" ")}</td>` +
+      `<td class="num">${range(rs.map((r) => r.recommendedCents))}</td>`,
     empty: "No items found.",
   },
   offers: {
     fetch: (cursor) => api().offers(state.game, $("#offers-search").value.trim(), cursor),
     selectable: () => true,
-    row: (r) =>
-      `<td>${itemCell(r)}</td><td class="num">${money(r.priceCents)}</td>` +
-      `<td>${r.createdAt ? new Date(r.createdAt).toLocaleDateString() : "—"}</td>`,
+    cells: (rs) => {
+      const newest = rs.map((r) => r.createdAt).filter(Boolean).sort().pop();
+      return `<td class="num">${range(rs.map((r) => r.priceCents))}</td><td>${newest ? new Date(newest).toLocaleDateString() : "—"}</td>`;
+    },
     empty: "No active offers.",
   },
 };
@@ -70,32 +94,56 @@ async function loadList(name, more = false) {
     renderList(name, true);
   }
   $(`#${name}-more`).disabled = true;
+  s.busy = true;
   try {
-    const r = await LISTS[name].fetch(s.cursor);
-    if (req !== s.req) return; // a newer search/refresh superseded this one
-    s.rows.push(...r.items);
-    s.cursor = r.cursor;
-    s.total = r.total;
+    // Load every page so groups count all copies. shortcut: stops at 5000 items per click, Load more continues.
+    for (let page = 0; page < 50; page++) {
+      const r = await LISTS[name].fetch(s.cursor);
+      if (req !== s.req) return; // a newer search/refresh superseded this one
+      s.rows.push(...r.items);
+      s.cursor = r.cursor;
+      s.total = r.total;
+      if (!s.cursor || !r.items.length) break;
+      renderList(name);
+    }
   } catch (e) {
     if (req === s.req) toast(errMsg(e), true);
   }
-  if (req === s.req) renderList(name);
+  if (req === s.req) {
+    s.busy = false;
+    renderList(name);
+  }
 }
 
 function renderList(name, loading = false) {
   const s = state[name], L = LISTS[name];
-  $(`#${name}-body`).innerHTML = s.rows.length
-    ? s.rows.map((r, i) => {
-        const ok = L.selectable(r), on = s.sel.has(r.id);
-        return `<tr class="${on ? "selected" : ""}${ok ? "" : " disabled"}">` +
-          `<td class="check"><input type="checkbox" data-i="${i}" ${on ? "checked" : ""} ${ok ? "" : "disabled"} aria-label="Select ${esc(r.title)}"></td>` +
-          L.row(r) + "</tr>";
-      }).join("")
-    : `<tr class="empty"><td colspan="4">${loading ? "Loading…" : L.empty}</td></tr>`;
+  s.groups = groupByTitle(s.rows);
+  const itemRow = (r, cell, cls = "") => {
+    const ok = L.selectable(r), on = s.sel.has(r.id);
+    return `<tr class="${cls}${on ? " selected" : ""}${ok ? "" : " disabled"}">` +
+      `<td class="check"><input type="checkbox" data-id="${esc(r.id)}" ${on ? "checked" : ""} ${ok ? "" : "disabled"} aria-label="Select ${esc(r.title)}"></td>` +
+      `<td>${cell}</td>${L.cells([r])}</tr>`;
+  };
+  const html = s.groups.map((g, gi) => {
+    if (g.length === 1) return itemRow(g[0], itemCell(g[0], 1, PAD));
+    const title = g[0].title, open = s.open.has(title);
+    const ok = g.filter(L.selectable), on = ok.filter((r) => s.sel.has(r.id)).length;
+    const expander = `<button class="expander" type="button" data-group="${gi}" aria-expanded="${open}" aria-label="${open ? "Hide" : "Show"} ${g.length} copies of ${esc(title)}">${CHEVRON}</button>`;
+    const head = `<tr class="group${on ? " selected" : ""}${ok.length ? "" : " disabled"}">` +
+      `<td class="check"><input type="checkbox" data-group="${gi}" ${on && on === ok.length ? "checked" : ""} ${on && on < ok.length ? "data-mixed" : ""} ${ok.length ? "" : "disabled"} aria-label="Select all ${esc(title)}"></td>` +
+      `<td>${itemCell(g[0], g.length, expander)}</td>${L.cells(g)}</tr>`;
+    const kids = open ? g.map((r, k) => itemRow(r, `<div class="child-item">${esc((r.details || []).join(" · ") || `Copy ${k + 1}`)}</div>`, "child")).join("") : "";
+    return head + kids;
+  }).join("");
+  $(`#${name}-body`).innerHTML = html || `<tr class="empty"><td colspan="4">${loading ? "Loading…" : L.empty}</td></tr>`;
+  $(`#${name}-body`).querySelectorAll("[data-mixed]").forEach((c) => (c.indeterminate = true));
   const more = $(`#${name}-more`);
-  more.hidden = loading || !s.cursor;
+  more.hidden = loading || s.busy || !s.cursor;
   more.disabled = false;
-  $(`#${name}-count`).textContent = loading ? "" : `${s.rows.length} of ${s.total || s.rows.length}`;
+  const total = s.total || s.rows.length;
+  $(`#${name}-count`).textContent = loading ? ""
+    : s.busy ? `Loading… ${s.rows.length} of ${total}`
+    : s.cursor ? `${s.rows.length} of ${total} items` : plural(s.rows.length, "item");
   syncSelection(name);
 }
 
@@ -115,14 +163,30 @@ function syncSelection(name) {
 
 const selected = (name) => state[name].rows.filter((r) => state[name].sel.has(r.id));
 
+// Re-render, then put keyboard focus back on the control that triggered it.
+function rerender(name, focusSelector) {
+  renderList(name);
+  const el = $(`#${name}-body`).querySelector(focusSelector);
+  if (el) el.focus();
+}
+
 for (const name of ["inventory", "offers"]) {
   $(`#${name}-body`).addEventListener("change", (e) => {
-    const i = e.target.dataset.i;
-    if (i == null) return;
-    const id = state[name].rows[i].id;
-    e.target.checked ? state[name].sel.add(id) : state[name].sel.delete(id);
-    e.target.closest("tr").classList.toggle("selected", e.target.checked);
-    syncSelection(name);
+    const s = state[name], { id, group } = e.target.dataset;
+    if (id != null) {
+      e.target.checked ? s.sel.add(id) : s.sel.delete(id);
+      rerender(name, `input[data-id="${CSS.escape(id)}"]`);
+    } else if (group != null) {
+      s.groups[group].filter(LISTS[name].selectable).forEach((r) => (e.target.checked ? s.sel.add(r.id) : s.sel.delete(r.id)));
+      rerender(name, `input[data-group="${group}"]`);
+    }
+  });
+  $(`#${name}-body`).addEventListener("click", (e) => {
+    const btn = e.target.closest(".expander");
+    if (!btn) return;
+    const s = state[name], title = s.groups[btn.dataset.group][0].title;
+    s.open.has(title) ? s.open.delete(title) : s.open.add(title);
+    rerender(name, `.expander[data-group="${btn.dataset.group}"]`);
   });
   $(`#${name}-all`).addEventListener("change", (e) => {
     const s = state[name];
@@ -198,28 +262,33 @@ function setWarn(msg, error = false) {
   $("#dlg-warn").className = "warn" + (error ? " error" : "");
 }
 
+// Rows are grouped by title: one price per title, applied to every selected copy.
 function openDialog(cfg) {
   dlg.cfg = cfg;
   dlg.step = cfg.priced ? "edit" : "review";
+  cfg.groups = groupByTitle(cfg.rows).map((items) => {
+    const known = items.map((r) => r.cents).filter((c) => c != null);
+    return { items, title: items[0].title, market: null, cents: known.length ? Math.min(...known) : null };
+  });
   $("#dlg-title").textContent = cfg.title;
   $("#dlg-desc").textContent = cfg.desc;
   $("#dlg-head").innerHTML = cfg.priced
-    ? `<th>Item</th><th class="num">${cfg.refLabel}</th><th class="num">Lowest listing</th><th class="num">Your price ($)</th>`
+    ? `<th>Item</th><th class="num">${cfg.refLabel}</th><th class="num">Lowest listing</th><th class="num">Your price each ($)</th>`
     : `<th>Item</th><th class="num">Price</th>`;
-  $("#dlg-body").innerHTML = cfg.rows.map((r) =>
-    `<tr><td>${itemCell(r)}</td>` + (cfg.priced
-      ? `<td class="num">${money(r.ref)}</td><td class="num market">…</td>` +
-        `<td class="num"><input class="price-input" inputmode="decimal" aria-label="Price for ${esc(r.title)}" value="${r.cents ? (r.cents / 100).toFixed(2) : ""}"></td>`
-      : `<td class="num">${money(r.cents)}</td>`) + "</tr>").join("");
+  $("#dlg-body").innerHTML = cfg.groups.map((g) =>
+    `<tr><td>${itemCell(g.items[0], g.items.length)}</td>` + (cfg.priced
+      ? `<td class="num">${range(g.items.map((r) => r.ref))}</td><td class="num market">…</td>` +
+        `<td class="num"><input class="price-input" inputmode="decimal" aria-label="Price each for ${esc(g.title)}" value="${g.cents ? (g.cents / 100).toFixed(2) : ""}"></td>`
+      : `<td class="num">${range(g.items.map((r) => r.cents))}</td>`) + "</tr>").join("");
   syncDialog();
   dlg.showModal();
   if (cfg.priced) {
-    api().best_prices(state.game, cfg.rows.map((r) => r.title))
-      .then((m) => cfg.rows.forEach((r) => (r.market = m[r.title] ?? null)))
+    api().best_prices(state.game, cfg.groups.map((g) => g.title))
+      .then((m) => cfg.groups.forEach((g) => (g.market = m[g.title] ?? null)))
       .catch(() => {})
       .finally(() => {
         if (dlg.cfg !== cfg) return;
-        dlg.querySelectorAll(".market").forEach((td, i) => (td.textContent = money(cfg.rows[i].market)));
+        dlg.querySelectorAll(".market").forEach((td, i) => (td.textContent = money(cfg.groups[i].market)));
         syncDialog();
       });
   }
@@ -236,8 +305,9 @@ function syncDialog() {
   // Typo guard: flag prices far below the market (or the reference price when there is no market).
   let low = 0;
   dlg.querySelectorAll("#dlg-body tr").forEach((tr, i) => {
-    const r = cfg.rows[i], base = r.market ?? r.ref;
-    const isLow = review && cfg.priced && base > 0 && r.cents < base * 0.7;
+    const g = cfg.groups[i], refs = g.items.map((r) => r.ref).filter((c) => c != null);
+    const base = g.market ?? (refs.length ? Math.min(...refs) : null);
+    const isLow = review && cfg.priced && base > 0 && g.cents < base * 0.7;
     tr.classList.toggle("low", isLow);
     low += isLow;
   });
@@ -250,7 +320,11 @@ function readPrices() {
     const v = inp.value.trim().replace(",", ".");
     const good = /^\d+(\.\d{1,2})?$/.test(v) && Number(v) > 0;
     inp.setAttribute("aria-invalid", String(!good));
-    if (good) dlg.cfg.rows[i].cents = Math.round(Number(v) * 100);
+    if (good) {
+      const g = dlg.cfg.groups[i];
+      g.cents = Math.round(Number(v) * 100);
+      g.items.forEach((r) => (r.cents = g.cents));
+    }
     ok = ok && good;
   });
   if (!ok) setWarn("Enter a price above 0 with up to 2 decimals, e.g. 12.50", true);

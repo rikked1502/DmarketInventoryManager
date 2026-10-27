@@ -119,6 +119,16 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
 .item { display: flex; align-items: center; gap: 10px; white-space: normal; }
 .item img { width: 56px; height: 42px; object-fit: contain; flex: none; }
 .item .sub { display: block; font-size: 12px; color: var(--fg-muted); }
+.qty { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; background: var(--muted); color: var(--fg-muted); font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.expander { width: 24px; height: 24px; flex: none; display: inline-grid; place-items: center; padding: 0; border: 0; border-radius: 4px; background: none; cursor: pointer; color: var(--fg-muted); }
+.expander-pad { width: 24px; flex: none; }
+.expander:hover { background: var(--muted); color: var(--fg); }
+.expander svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform .15s; }
+.expander[aria-expanded="true"] svg { transform: rotate(90deg); }
+tbody tr.group td { font-weight: 500; }
+tbody tr.child td { background: var(--bg); font-size: 13px; padding-top: 4px; padding-bottom: 4px; }
+tbody tr.child.selected td { background: var(--row-selected); }
+.child-item { padding-left: 34px; color: var(--fg-muted); white-space: normal; }
 .empty td { text-align: center; color: var(--fg-muted); padding: 32px; }
 .pos { color: var(--positive); }
 .neg { color: var(--fg); }

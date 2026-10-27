@@ -86,6 +86,17 @@ class MoneyTest(unittest.TestCase):
             item = dmarket.Client(PUBLIC, SECRET).inventory("tf2")["items"][0]
         self.assertEqual(item["recommendedCents"], 43)
 
+    def test_details(self):
+        skin = {"cs2": {"float": "0.2356003224849701", "paintSeed": 412, "phase": "phase-2",
+                        "stickers": [{"name": "Sticker | Natus Vincere | Katowice 2019"}], "charms": [], "customName": ""},
+                "unlockDate": "2999-01-01T00:00:00.123456789Z"}
+        self.assertEqual(dmarket.details(skin), ["Float 0.235600", "Pattern 412", "Phase 2",
+                                                 "Stickers: Natus Vincere | Katowice 2019", "Trade locked until 2999-01-01"])
+        case = {"cs2": {"float": "0", "paintSeed": 0, "phase": "", "stickers": []}, "unlockDate": "1970-01-01T00:00:00Z"}
+        self.assertEqual(dmarket.details(case), [])
+        hat = {"tf2": {"effect": "Burning Flames", "killstreak": "KILLSTREAK_NONE", "spells": [], "paintColor": ""}}
+        self.assertEqual(dmarket.details(hat), ["Effect: Burning Flames"])
+
     def test_history_net_after_fee(self):
         sent, urlopen = capture({"Trades": [{
             "OfferID": "o1", "Title": "AWP | Asiimov (Field-Tested)", "Price": {"Amount": 50.0},
