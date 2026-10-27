@@ -13,6 +13,10 @@
 <body>
   <header class="topbar">
     <div class="brand">DMarket Inventory Manager</div>
+    <label class="field-inline" id="account-field" hidden>
+      <span class="sr-only">Account</span>
+      <select id="account"></select>
+    </label>
     <label class="field-inline">
       <span class="sr-only">Game</span>
       <select id="game">
@@ -38,6 +42,7 @@
       <li>On dmarket.com open <b>Settings → Trading API</b> and generate a key pair.</li>
       <li>Copy <code>.env.example</code> to <code>.env</code> in the app folder (next to <code>app.py</code>).</li>
       <li>Paste your public and secret keys into <code>.env</code> and save it.</li>
+      <li>More accounts: add <code>DMARKET_PUBLIC_KEY_ALT</code> / <code>DMARKET_SECRET_KEY_ALT</code> (any name after the underscore).</li>
     </ol>
     <p class="muted">Your keys stay on this computer. They are only read by the app to sign requests.</p>
     <button class="btn primary" id="retry" type="button">Try again</button>

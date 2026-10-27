@@ -29,6 +29,12 @@ def to_cents(dollars):
     return int((Decimal(str(dollars)) * 100).quantize(Decimal(1)))
 
 
+def _amount(money):
+    # The live API sends {"Currency", "Amount"} where the docs say lowercase; accept both.
+    money = money or {}
+    return money.get("Amount", money.get("amount"))
+
+
 def _check_game(game):
     if game not in GAMES:
         raise DMarketError(f"Unsupported game: {game}")
@@ -108,7 +114,7 @@ class Client:
                 "float": (a.get("cs2") or {}).get("float", ""),
                 "inMarket": in_market,
                 "sellable": in_market and not a.get("saleRestricted") and not a.get("sellUnavailable"),
-                "recommendedCents": to_cents((it.get("offerRecommendedPrice") or {}).get("amount")),
+                "recommendedCents": to_cents(_amount(it.get("offerRecommendedPrice"))),
             })
         return {"items": items, "cursor": r.get("cursor", ""), "total": int(r.get("total") or 0)}
 
@@ -140,8 +146,7 @@ class Client:
             r = self.call("POST", "/marketplace-api/v1/aggregated-prices",
                           body={"filter": {"game": game, "titles": chunk}, "limit": str(len(chunk))})
             for p in r.get("aggregatedPrices") or []:
-                best = p.get("offerBestPrice") or {}
-                amount = best.get("Amount", best.get("amount"))
+                amount = _amount(p.get("offerBestPrice"))
                 out[p.get("title")] = int(amount) if amount not in (None, "") else None
         return out
 

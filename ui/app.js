@@ -31,7 +31,7 @@ function toast(msg, error = false) {
 }
 
 function itemCell(r) {
-  const sub = r.float ? `<span class="sub">Float ${esc(Number(r.float).toFixed(6))}</span>` : "";
+  const sub = Number(r.float) > 0 ? `<span class="sub">Float ${esc(Number(r.float).toFixed(6))}</span>` : "";
   const img = r.image ? `<img src="${esc(r.image)}" alt="" loading="lazy">` : "";
   return `<div class="item">${img}<span>${esc(r.title)}${sub}</span></div>`;
 }
@@ -358,26 +358,40 @@ function setTheme(theme, save) {
 }
 $("#theme").addEventListener("click", () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark", true));
 
-async function connect() {
-  $("#retry").disabled = true;
+function resetData() {
+  // Bumping req makes any in-flight response from the previous account get dropped.
+  for (const name of ["inventory", "offers"]) Object.assign(state[name], { rows: [], cursor: "", total: 0, req: state[name].req + 1 });
+  for (const name of ["inventory", "offers"]) state[name].sel.clear();
+  state.history = { req: state.history.req + 1, kinds: [] };
+  state.loaded.clear();
+  $("#balance").textContent = "—";
+}
+
+async function connect(account) {
+  $("#retry").disabled = $("#account").disabled = true;
+  resetData();
   let s;
   try {
-    s = await api().connect();
+    s = await api().connect(account ?? null);
   } catch (e) {
-    s = { state: "error", message: errMsg(e) };
+    s = { state: "error", message: errMsg(e), accounts: [] };
   }
-  $("#retry").disabled = false;
+  $("#retry").disabled = $("#account").disabled = false;
+  $("#account-field").hidden = !s.accounts.length;
+  $("#account").innerHTML = s.accounts.map((a) => `<option value="${esc(a)}">${esc(a)}</option>`).join("");
+  $("#account").value = s.account ?? "";
   const ok = s.state === "ok";
   $("#setup").hidden = ok;
   $("#main").hidden = !ok;
   if (!ok) {
-    $("#setup-reason").textContent = s.state === "missing" ? "No API keys found in .env." : `Could not connect: ${s.message}`;
+    $("#setup-reason").textContent = s.state === "missing" ? "No API keys found in .env." : `Could not connect to "${s.account}": ${s.message}`;
     return;
   }
   $("#balance").textContent = money(s.balanceCents);
   showTab(state.tab);
 }
-$("#retry").addEventListener("click", connect);
+$("#retry").addEventListener("click", () => connect($("#account").value || null));
+$("#account").addEventListener("change", (e) => connect(e.target.value));
 
 async function boot() {
   setTheme((await api().get_theme()) || document.documentElement.dataset.theme, false);

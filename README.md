@@ -5,6 +5,7 @@ Supports **Counter-Strike 2** and **Team Fortress 2**, with light and dark theme
 
 ## Features
 
+- **Multiple accounts**: switch between DMarket accounts from the header.
 - **Balance**: your available USD balance, always in the header.
 - **Inventory**: your Steam and DMarket items in one list, with search and a *DMarket only* filter.
   Steam items are shown read-only; deposit them on dmarket.com first to sell them.
@@ -34,6 +35,19 @@ python app.py
 ```
 
 If the keys are missing or wrong, the app shows a setup screen; fix `.env` and press **Try again**.
+
+### Multiple accounts
+
+Add one key pair per account to `.env`. The suffix after `_KEY` becomes the account name in the header switcher:
+
+```ini
+DMARKET_PUBLIC_KEY=...        # "Main"
+DMARKET_SECRET_KEY=...
+DMARKET_PUBLIC_KEY_ALT=...    # "Alt"
+DMARKET_SECRET_KEY_ALT=...
+```
+
+The last account you used is remembered.
 
 ## Security
 

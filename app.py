@@ -22,26 +22,55 @@ def load_env(path):
     return env
 
 
+def load_accounts(env):
+    """DMARKET_PUBLIC_KEY/DMARKET_SECRET_KEY -> 'Main'; DMARKET_PUBLIC_KEY_<NAME>/DMARKET_SECRET_KEY_<NAME> -> '<Name>'."""
+    accounts = {}
+    for key, public in env.items():
+        if not key.startswith("DMARKET_PUBLIC_KEY"):
+            continue
+        suffix = key[len("DMARKET_PUBLIC_KEY"):]
+        secret = env.get("DMARKET_SECRET_KEY" + suffix, "")
+        if (suffix == "" or suffix.startswith("_")) and public and secret:
+            accounts[suffix[1:].replace("_", " ").title() or "Main"] = (public, secret)
+    return accounts
+
+
+def read_settings():
+    try:
+        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(**changes):
+    SETTINGS_FILE.write_text(json.dumps({**read_settings(), **changes}), encoding="utf-8")
+
+
 class Api:
     """Methods exposed to the page as window.pywebview.api.*. Keys never leave Python."""
 
     def __init__(self):
         self._client = None
 
-    def connect(self):
-        """(Re)read .env and verify the keys by fetching the balance."""
+    def connect(self, account=None):
+        """(Re)read .env, pick an account (given > last used > first) and verify it by fetching the balance."""
         self._client = None
-        env = load_env(ENV_FILE)
-        public, secret = env.get("DMARKET_PUBLIC_KEY", ""), env.get("DMARKET_SECRET_KEY", "")
-        if not public or not secret:
-            return {"state": "missing"}
+        accounts = load_accounts(load_env(ENV_FILE))
+        if not accounts:
+            return {"state": "missing", "accounts": []}
+        if account not in accounts:
+            account = read_settings().get("account")
+        if account not in accounts:
+            account = next(iter(accounts))
+        result = {"accounts": list(accounts), "account": account}
         try:
-            client = Client(public, secret)
+            client = Client(*accounts[account])
             balance = client.balance()
         except (ValueError, DMarketError) as e:
-            return {"state": "error", "message": str(e)}
+            return {**result, "state": "error", "message": str(e)}
         self._client = client
-        return {"state": "ok", "balanceCents": balance}
+        save_settings(account=account)
+        return {**result, "state": "ok", "balanceCents": balance}
 
     def _c(self):
         if not self._client:
@@ -74,14 +103,11 @@ class Api:
 
     # The built-in server picks a random port, so localStorage would not survive restarts.
     def get_theme(self):
-        try:
-            return json.loads(SETTINGS_FILE.read_text(encoding="utf-8")).get("theme")
-        except (OSError, ValueError):
-            return None
+        return read_settings().get("theme")
 
     def set_theme(self, theme):
         if theme in ("light", "dark"):
-            SETTINGS_FILE.write_text(json.dumps({"theme": theme}), encoding="utf-8")
+            save_settings(theme=theme)
 
 
 if __name__ == "__main__":

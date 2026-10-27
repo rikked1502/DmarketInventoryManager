@@ -77,6 +77,15 @@ class MoneyTest(unittest.TestCase):
         self.assertEqual(dmarket.to_cents(0.29), 29)
         self.assertIsNone(dmarket.to_cents(None))
 
+    def test_inventory_reads_capitalized_amount(self):
+        # Shape seen from the live API (docs say lowercase "amount").
+        sent, urlopen = capture({"items": [{"attributes": {"id": "a1", "title": "Gallery Case"}, "inMarket": True,
+                                            "offerRecommendedPrice": {"Currency": "USD", "Amount": "0.43"}}],
+                                 "cursor": "", "total": "1"})
+        with mock.patch("urllib.request.urlopen", urlopen):
+            item = dmarket.Client(PUBLIC, SECRET).inventory("tf2")["items"][0]
+        self.assertEqual(item["recommendedCents"], 43)
+
     def test_history_net_after_fee(self):
         sent, urlopen = capture({"Trades": [{
             "OfferID": "o1", "Title": "AWP | Asiimov (Field-Tested)", "Price": {"Amount": 50.0},
@@ -85,6 +94,19 @@ class MoneyTest(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", urlopen):
             row = dmarket.Client(PUBLIC, SECRET).history("sold")["rows"][0]
         self.assertEqual((row["priceCents"], row["feeCents"], row["netCents"]), (5000, 250, 4750))
+
+
+class AccountsTest(unittest.TestCase):
+    def test_load_accounts(self):
+        import app  # imported here so the signing tests don't need pywebview
+        env = {
+            "DMARKET_PUBLIC_KEY": "p0", "DMARKET_SECRET_KEY": "s0",
+            "DMARKET_PUBLIC_KEY_ALT": "p1", "DMARKET_SECRET_KEY_ALT": "s1",
+            "DMARKET_PUBLIC_KEY_SECOND_MAIN": "p2", "DMARKET_SECRET_KEY_SECOND_MAIN": "s2",
+            "DMARKET_PUBLIC_KEY_NOSECRET": "p3",
+            "DMARKET_PUBLIC_KEYX": "p4", "DMARKET_SECRET_KEYX": "s4",
+        }
+        self.assertEqual(app.load_accounts(env), {"Main": ("p0", "s0"), "Alt": ("p1", "s1"), "Second Main": ("p2", "s2")})
 
 
 if __name__ == "__main__":
