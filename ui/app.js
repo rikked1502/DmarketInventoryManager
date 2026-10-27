@@ -17,6 +17,7 @@ const state = {
   offers: { rows: [], cursor: "", sel: new Set(), open: new Set(), req: 0 },
   history: { req: 0, kinds: [] },
 };
+const working = new Set(); // ids with a background list/reprice/remove still running
 
 // ---------- helpers ----------
 
@@ -67,7 +68,7 @@ function refreshBalance() {
 const LISTS = {
   inventory: {
     fetch: (cursor) => api().inventory(state.game, $("#inventory-search").value.trim(), $("#inventory-filter").value === "dmarket", cursor),
-    selectable: (r) => r.sellable,
+    selectable: (r) => r.sellable && !working.has(r.id),
     // cells after the item column, for one item or a whole group
     cells: (rs) =>
       `<td>${[...new Set(rs.map((r) => r.inMarket))].map((m) => m
@@ -78,7 +79,7 @@ const LISTS = {
   },
   offers: {
     fetch: (cursor) => api().offers(state.game, $("#offers-search").value.trim(), cursor),
-    selectable: () => true,
+    selectable: (r) => !working.has(r.id),
     cells: (rs) => {
       const newest = rs.map((r) => r.createdAt).filter(Boolean).sort().pop();
       return `<td class="num">${range(rs.map((r) => r.priceCents))}</td><td>${newest ? new Date(newest).toLocaleDateString() : "—"}</td>`;
@@ -354,22 +355,24 @@ function report(res, cfg) {
 }
 
 $("#dlg-primary").addEventListener("click", async () => {
-  const cfg = dlg.cfg, btn = $("#dlg-primary");
+  const cfg = dlg.cfg;
   if (dlg.step === "edit") {
     if (readPrices()) { dlg.step = "review"; syncDialog(); }
     return;
   }
-  btn.disabled = true;
+  // Run in the background: close now, lock the rows until DMarket answers.
+  dlg.close();
+  const ids = cfg.rows.map((r) => r.id);
+  ids.forEach((id) => { working.add(id); state.inventory.sel.delete(id); state.offers.sel.delete(id); });
+  for (const name of ["inventory", "offers"]) if (state.loaded.has(name)) renderList(name);
+  toast(`${cfg.workingVerb} ${plural(ids.length, "item")} in the background…`);
   try {
-    const res = await cfg.send(cfg.rows);
-    dlg.close();
-    report(res, cfg);
-    cfg.done();
+    report(await cfg.send(cfg.rows), cfg);
   } catch (e) {
-    setWarn(errMsg(e), true);
-  } finally {
-    btn.disabled = false;
+    toast(`${cfg.verb} failed: ${errMsg(e)}`, true);
   }
+  ids.forEach((id) => working.delete(id));
+  cfg.done();
 });
 $("#dlg-back").addEventListener("click", () => { dlg.step = "edit"; syncDialog(); });
 $("#dlg-cancel").addEventListener("click", () => dlg.close());
@@ -378,7 +381,7 @@ $("#list-btn").addEventListener("click", () => openDialog({
   title: "List items for sale",
   desc: "Prices start at DMarket's recommended price. Adjust them, review, then confirm.",
   rows: selected("inventory").map((r) => ({ ...r, ref: r.recommendedCents, cents: r.recommendedCents })),
-  priced: true, refLabel: "Recommended", verb: "List", pastVerb: "Listed",
+  priced: true, refLabel: "Recommended", verb: "List", workingVerb: "Listing", pastVerb: "Listed",
   send: (rows) => api().create_offers(rows.map((r) => ({ assetId: r.id, priceCents: r.cents }))),
   done: () => { loadList("inventory"); loadList("offers"); refreshBalance(); },
 }));
@@ -387,7 +390,7 @@ $("#reprice-btn").addEventListener("click", () => openDialog({
   title: "Change prices",
   desc: "Set new prices for the selected offers, review, then confirm.",
   rows: selected("offers").map((r) => ({ ...r, ref: r.priceCents, cents: r.priceCents })),
-  priced: true, refLabel: "Current", verb: "Update", pastVerb: "Updated",
+  priced: true, refLabel: "Current", verb: "Update", workingVerb: "Updating", pastVerb: "Updated",
   send: (rows) => api().update_offers(rows.map((r) => ({ offerId: r.id, priceCents: r.cents }))),
   done: () => loadList("offers"),
 }));
@@ -396,7 +399,7 @@ $("#remove-btn").addEventListener("click", () => openDialog({
   title: "Remove offers from sale",
   desc: "These listings will be taken off the market. The items stay in your DMarket inventory.",
   rows: selected("offers").map((r) => ({ ...r, cents: r.priceCents })),
-  priced: false, danger: true, verb: "Remove", pastVerb: "Removed",
+  priced: false, danger: true, verb: "Remove", workingVerb: "Removing", pastVerb: "Removed",
   send: (rows) => api().delete_offers(rows.map((r) => r.id)),
   done: () => { loadList("offers"); loadList("inventory"); },
 }));
