@@ -102,6 +102,31 @@ class SigningTest(unittest.TestCase):
         self.assertEqual(json.loads(sent["req"].data), {"Targets": [{"TargetID": "t1"}, {"TargetID": "t2"}]})
         self.assertEqual(res, {"ok": 1, "failed": [{"targetId": "t2", "code": "BadRequest", "message": "gone"}]})
 
+    def test_path_params_signed_decoded(self):
+        sent = []
+
+        def urlopen(req, timeout):
+            sent.append(req)
+            return FakeResponse({"aggregatedPrices": [], "orders": [
+                {"title": "AK-47 | Redline (Field-Tested)", "price": "9999", "amount": "9", "attributes": {"floatPartValue": "FT-0", "phase": "any"}},
+                {"title": "AK-47 | Redline (Field-Tested)", "price": "4993", "amount": "4", "attributes": {"floatPartValue": "any", "phase": "any"}},
+                {"title": "AK-47 | Redline (Field-Tested)", "price": "2", "amount": "1"}]})
+        with mock.patch("urllib.request.urlopen", urlopen), mock.patch("time.time", return_value=1700000000):
+            m = dmarket.Client(PUBLIC, SECRET).market("a8db", "AK-47 | Redline (Field-Tested)")
+        req = sent[1]
+        self.assertEqual(req.full_url, dmarket.API + "/marketplace-api/v1/targets-by-title/a8db/AK-47%20%7C%20Redline%20%28Field-Tested%29")
+        self.verify(req, "GET/marketplace-api/v1/targets-by-title/a8db/AK-47 | Redline (Field-Tested)1700000000")
+        self.assertEqual((m["bid"], m["bidLow"], m["orders"]), (4993, 2, 5))
+
+    def test_target_attrs_never_widen(self):
+        self.assertEqual(dmarket.target_attrs({"floatPart": "FLOAT_PART_FN_0", "phase": "PHASE_TITLE_UNSPECIFIED", "paintSeed": 0}),
+                         {"floatPartValue": "FN-0"})
+        self.assertEqual(dmarket.target_attrs({"phase": "PHASE_TITLE_BLACK_PEARL", "paintSeed": 661}),
+                         {"phase": "black-pearl", "paintSeed": 661})
+        self.assertEqual(dmarket.target_attrs({}), {})
+        self.assertIsNone(dmarket.target_attrs({"floatPart": "FLOAT_PART_SOMETHING_NEW"}))
+        self.assertIsNone(dmarket.target_attrs({"phase": "PHASE_TITLE_GAMMA_1"}))
+
     def test_rejects_non_positive_price(self):
         with self.assertRaises(dmarket.DMarketError):
             dmarket.Client(PUBLIC, SECRET).create_offers([{"assetId": "a1", "priceCents": 0}])
@@ -159,6 +184,66 @@ class AccountsTest(unittest.TestCase):
             "DMARKET_PUBLIC_KEYX": "p4", "DMARKET_SECRET_KEYX": "s4",
         }
         self.assertEqual(app.load_accounts(env), {"Main": ("p0", "s0"), "Alt": ("p1", "s1"), "Second Main": ("p2", "s2")})
+
+
+class PauseTest(unittest.TestCase):
+    """Pause/activate must never lose a buy order: local copy first, DMarket second."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        import app
+        self.app = app
+        self.tmp = tempfile.TemporaryDirectory()
+        patcher = mock.patch.object(app, "SETTINGS_FILE", Path(self.tmp.name) / "settings.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+        self.client = mock.Mock(public_key="pk")
+        self.api = app.Api()
+        self.api._client = self.client
+
+    def row(self, id, status="active", attrs=None):
+        return {"id": id, "title": "Clutch Case", "amount": 5, "priceCents": 38, "status": status, "attrs": attrs if attrs is not None else {}}
+
+    def test_pause_keeps_copy_only_for_removed_orders(self):
+        self.client.delete_targets.return_value = {"ok": 1, "failed": [{"targetId": "t2", "code": "", "message": "nope"}]}
+        res = self.api.pause_targets("a8db", [self.row("t1"), self.row("t2")])
+        self.client.delete_targets.assert_called_once_with(["t1", "t2"])
+        store = self.app.paused(self.client)
+        self.assertEqual(len(store), 1)
+        self.assertEqual(res["paused"], [store[0]["id"]])
+        self.assertEqual((store[0]["title"], store[0]["amount"], store[0]["priceCents"]), ("Clutch Case", 5, 38))
+
+    def test_pause_network_error_drops_copies(self):
+        self.client.delete_targets.side_effect = dmarket.DMarketError("down")
+        with self.assertRaises(dmarket.DMarketError):
+            self.api.pause_targets("a8db", [self.row("t1")])
+        self.assertEqual(self.app.paused(self.client), [])
+
+    def test_pause_refuses_unrecreatable_restrictions(self):
+        bad = self.row("t1")
+        bad["attrs"] = None
+        with self.assertRaises(dmarket.DMarketError):
+            self.api.pause_targets("a8db", [bad])
+        self.client.delete_targets.assert_not_called()
+
+    def test_activate_inactive_recreates_and_keeps_copy_on_failure(self):
+        self.client.delete_targets.return_value = {"ok": 2, "failed": []}
+        self.client.create_target.side_effect = [{"ok": 1, "failed": []},
+                                                 {"ok": 0, "failed": [{"title": "Clutch Case", "code": "NotEnoughBalance", "message": ""}]}]
+        res = self.api.activate_targets("a8db", [self.row("t1", "inactive", {"floatPartValue": "FN-0"}), self.row("t2", "inactive")])
+        self.assertEqual(self.client.create_target.call_args_list[0].args, ("a8db", "Clutch Case", 5, 38, {"floatPartValue": "FN-0"}))
+        self.assertEqual(res["ok"], 1)
+        self.assertEqual(len(self.app.paused(self.client)), 1)  # the failed one stays paused, not lost
+
+    def test_remove_paused_is_local(self):
+        self.client.delete_targets.return_value = {"ok": 1, "failed": []}
+        pid = self.api.pause_targets("a8db", [self.row("t1")])["paused"][0]
+        self.client.delete_targets.reset_mock()
+        self.assertEqual(self.api.delete_targets([pid])["ok"], 1)
+        self.client.delete_targets.assert_not_called()
+        self.assertEqual(self.app.paused(self.client), [])
 
 
 if __name__ == "__main__":

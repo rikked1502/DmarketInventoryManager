@@ -12,8 +12,10 @@ Supports **Counter-Strike 2** and **Team Fortress 2**, with light and dark theme
 - **List for sale**: select items, start from DMarket's recommended price, see the lowest current listing,
   review, then confirm. Prices more than 30% below market are flagged before you confirm.
 - **My offers**: change prices or remove listings in bulk, always behind a confirmation step.
-- **Buy orders**: create a buy order (exact item name, quantity 1–100, price each) next to the lowest listing and
-  best existing buy order, or remove buy orders in bulk. A price at or above the cheapest listing is flagged.
+- **Buy orders**: create buy orders for any item on DMarket. Names are suggested as you type, and the form shows the
+  lowest listing and the highest/lowest buy order, with one-click "Outbid" and "Match" prices. Unknown names, bad
+  quantities and prices over 3× the lowest listing are blocked; overpaying, going over your balance and duplicate
+  orders are flagged before you confirm. Pause, activate or remove buy orders in bulk.
 - **Transactions**: your sales (with fee and net) and buy-order purchases in one list, filterable by Sold / Bought.
 
 There is no automated trading: nothing changes on your account unless you confirm it.
@@ -63,7 +65,11 @@ The last account you used is remembered.
   (closed targets). Money deposits and withdrawals, and direct market purchases, are not included.
   History is account-wide across all games.
 - No deposit or withdraw, editing existing buy orders, or buying in this version.
-- Buy orders match any copy of the title; float, pattern and phase restrictions are not supported.
+- New buy orders match any copy of the title; setting float, pattern or phase restrictions is not supported
+  (existing restrictions are kept when pausing/activating).
+- DMarket's API cannot pause or reactivate a buy order. **Pause** removes it on DMarket and keeps a copy in
+  `settings.json`; **Activate** creates it again (so it joins the back of the queue). Inactive orders are reactivated
+  the same way. Deleting `settings.json` deletes paused orders.
 
 ## Project layout
 

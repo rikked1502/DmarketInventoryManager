@@ -65,9 +65,19 @@ function newestDate(rs) {
   return newest ? new Date(newest).toLocaleDateString() : "—";
 }
 
-function refreshBalance() {
-  api().balance().then((c) => ($("#balance").textContent = money(c))).catch(() => {});
+function setBalance(c) {
+  state.balance = c;
+  $("#balance").textContent = money(c);
 }
+function refreshBalance() {
+  api().balance().then(setBalance).catch(() => {});
+}
+
+const TARGET_STATUS = {
+  active: '<span class="badge dm">Active</span>',
+  inactive: '<span class="badge" title="Not matching sellers, e.g. set inactive or balance too low. DMarket deletes inactive orders after 7 days.">Inactive</span>',
+  paused: '<span class="badge paused" title="Removed on DMarket, kept in this app. Activate to create it again.">Paused</span>',
+};
 
 // ---------- inventory & offers tables ----------
 
@@ -94,9 +104,7 @@ const LISTS = {
     selectable: (r) => !working.has(r.id),
     cells: (rs) =>
       `<td class="num">${rs.reduce((n, r) => n + r.amount, 0)}</td><td class="num">${range(rs.map((r) => r.priceCents))}</td>` +
-      `<td>${[...new Set(rs.map((r) => r.active))].map((a) => a
-        ? '<span class="badge dm">Active</span>'
-        : '<span class="badge" title="Not matching sellers right now, e.g. when your balance is too low">Inactive</span>').join(" ")}</td>` +
+      `<td>${[...new Set(rs.map((r) => r.status))].map((s) => TARGET_STATUS[s]).join(" ")}</td>` +
       `<td>${newestDate(rs)}</td>`,
     empty: "No buy orders.",
   },
@@ -179,7 +187,10 @@ function syncSelection(name) {
   } else if (name === "offers") {
     $("#reprice-btn").disabled = $("#remove-btn").disabled = !n;
   } else {
+    const rows = selected("targets");
     $("#target-remove-btn").disabled = !n;
+    $("#target-pause-btn").disabled = !rows.some(canPause);
+    $("#target-activate-btn").disabled = !rows.some(canActivate);
   }
 }
 
@@ -426,61 +437,135 @@ $("#remove-btn").addEventListener("click", () => openDialog({
 let market = {}; // last looked-up title, so typing and Create share one request
 function marketFor(title) {
   const key = state.game + "\n" + title;
-  if (market.key !== key) market = { key, p: api().best_prices(state.game, [title]).then((m) => m[title], () => null) };
+  if (market.key !== key) market = { key, p: api().market(state.game, title).catch(() => null) };
   return market.p;
 }
-const marketText = (m) => !m ? "Could not load market prices."
-  : m.low == null && m.bid == null ? "No listings or buy orders for this exact name."
-  : `Lowest listing ${money(m.low)} · Best buy order ${money(m.bid)}`;
+const known = (m) => m && (m.listings > 0 || m.orders > 0);
+const cents = (v) => (/^\d+(\.\d{1,2})?$/.test(v) && Number(v) > 0 ? Math.round(Number(v) * 100) : null);
 
-let marketTimer;
+// Read and check the form. Returns { title, qty, price, errors } — errors block Create.
+function readTargetForm(m) {
+  const title = $("#target-title").value.trim(), qty = Number($("#target-qty").value.trim());
+  const price = cents($("#target-price").value.trim().replace(",", "."));
+  const okQty = Number.isInteger(qty) && qty >= 1 && qty <= 100;
+  const errors = [];
+  if (!title) errors.push("Enter an item name.");
+  else if (m !== undefined && !known(m)) errors.push(m ? "No item with this exact name is listed or wanted on DMarket. Pick one from the suggestions." : "Could not check this item on DMarket. Try again.");
+  if (!okQty) errors.push("Quantity must be a whole number from 1 to 100.");
+  if (price == null) errors.push("Price must be above 0 with up to 2 decimals, e.g. 0.45");
+  else if (m && m.low && price > m.low * 3) errors.push(`${money(price)} is more than 3× the lowest listing (${money(m.low)}). Probably a typo.`);
+  return { title, qty, price, errors, bad: { title: !title || (m !== undefined && !known(m)), qty: !okQty, price: price == null } };
+}
+
+function showMarket(m) {
+  const box = $("#target-market");
+  if (!m || !known(m)) { box.innerHTML = ""; return; }
+  const chips = [];
+  if (m.bid != null && (m.low == null || m.bid + 1 < m.low)) chips.push([m.bid + 1, "Outbid"]);
+  if (m.bid != null && (m.low == null || m.bid < m.low)) chips.push([m.bid, "Match highest"]);
+  box.innerHTML =
+    `<span>Lowest listing <b>${money(m.low)}</b> <span class="muted">(${m.listings} listed)</span></span>` +
+    `<span>Buy orders: highest <b>${money(m.bid)}</b>, lowest <b>${money(m.bidLow)}</b> <span class="muted">(${m.orders} wanted)</span></span>` +
+    chips.map(([c, label]) => `<button class="chip" type="button" data-price="${(c / 100).toFixed(2)}">${label} ${money(c)}</button>`).join("");
+}
+
+function showTotal() {
+  const { qty, price, bad } = readTargetForm();
+  $("#target-total").textContent = !bad.qty && !bad.price ?`Total ${money(qty * price)} · balance ${money(state.balance)}` : "";
+}
+
+let marketTimer, suggestTimer, suggestReq = 0;
 $("#target-title").addEventListener("input", () => {
-  clearTimeout(marketTimer);
-  $("#target-market").textContent = "";
-  $("#target-market").classList.remove("form-error");
   const title = $("#target-title").value.trim();
-  if (title) marketTimer = setTimeout(async () => {
+  $("#target-error").textContent = "";
+  $("#target-title").removeAttribute("aria-invalid");
+  $("#target-market").innerHTML = "";
+  clearTimeout(marketTimer);
+  clearTimeout(suggestTimer);
+  if (!title) return;
+  marketTimer = setTimeout(async () => {
     const m = await marketFor(title);
-    if ($("#target-title").value.trim() === title) $("#target-market").textContent = marketText(m);
+    if ($("#target-title").value.trim() === title) showMarket(m);
   }, 500);
+  // Suggestions: DMarket names starting with what was typed, plus names from this account's lists.
+  if (title.length >= 2) suggestTimer = setTimeout(async () => {
+    const req = ++suggestReq, game = state.game;
+    const remote = await api().search_titles(game, title).catch(() => []);
+    if (req !== suggestReq || game !== state.game) return;
+    const own = Object.keys(LISTS).flatMap((name) => state[name].rows.map((r) => r.title))
+      .filter((t) => t.toLowerCase().includes(title.toLowerCase()));
+    $("#target-titles").innerHTML = [...new Set([...remote, ...own])].slice(0, 30).map((t) => `<option value="${esc(t)}">`).join("");
+  }, 300);
 });
-// Suggest names already seen in this account's lists; DMarket needs the exact title.
-$("#target-title").addEventListener("focus", () => {
-  const titles = new Set(Object.keys(LISTS).flatMap((name) => state[name].rows.map((r) => r.title)));
-  $("#target-titles").innerHTML = [...titles].sort().map((t) => `<option value="${esc(t)}">`).join("");
+$("#target-qty").addEventListener("input", showTotal);
+$("#target-price").addEventListener("input", showTotal);
+$("#target-market").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  $("#target-price").value = chip.dataset.price;
+  showTotal();
 });
 
 $("#target-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const titleIn = $("#target-title"), qtyIn = $("#target-qty"), priceIn = $("#target-price");
-  const title = titleIn.value.trim(), qty = Number(qtyIn.value.trim()), price = priceIn.value.trim().replace(",", ".");
-  const okTitle = !!title, okQty = Number.isInteger(qty) && qty >= 1 && qty <= 100;
-  const okPrice = /^\d+(\.\d{1,2})?$/.test(price) && Number(price) > 0;
-  titleIn.setAttribute("aria-invalid", String(!okTitle));
-  qtyIn.setAttribute("aria-invalid", String(!okQty));
-  priceIn.setAttribute("aria-invalid", String(!okPrice));
-  $("#target-market").classList.toggle("form-error", !okTitle || !okQty || !okPrice);
-  if (!okTitle || !okQty || !okPrice) {
-    $("#target-market").textContent = "Enter the exact item name, a quantity of 1–100 and a price above 0 with up to 2 decimals.";
-    return;
-  }
-  const cents = Math.round(Number(price) * 100), game = state.game, m = await marketFor(title);
+  const title = $("#target-title").value.trim(), game = state.game;
+  const m = title ? await marketFor(title) : undefined;
+  const { qty, price, errors, bad } = readTargetForm(m);
+  for (const k in bad) $(`#target-${k}`).setAttribute("aria-invalid", String(bad[k]));
+  $("#target-error").textContent = errors.join(" ");
+  if (errors.length) return;
+  const total = qty * price, warn = [];
+  if (m.low != null && price >= m.low) warn.push(`At or above the cheapest listing (${money(m.low)}): buying that listing may be cheaper.`);
+  if (state.balance != null && total > state.balance) warn.push(`Total ${money(total)} is more than your balance (${money(state.balance)}).`);
+  if (state.targets.rows.some((r) => r.title === title)) warn.push("You already have a buy order for this item.");
   openDialog({
     title: "Create buy order",
-    desc: `${marketText(m)}. Sellers can fill your order at this price; it is paid from your balance.`,
-    warn: !m || (m.low == null && m.bid == null) ? "No listings or buy orders found for this name. Check it is the exact DMarket item name."
-      : m.low != null && cents >= m.low ? `This is at or above the cheapest listing (${money(m.low)}). Buying that listing directly may be cheaper.` : "",
-    rows: [{ id: title, title, details: [`${qty} × ${money(cents)}`], cents: qty * cents }],
+    desc: `Lowest listing ${money(m.low)} · highest buy order ${money(m.bid)}. Sellers can fill your order at this price; it is paid from your balance.`,
+    warn: warn.join(" "),
+    rows: [{ id: title, title, details: [`${qty} × ${money(price)}`], cents: total }],
     priced: false, noun: "buy order", noRetry: true, verb: "Create", workingVerb: "Creating", pastVerb: "Created",
-    send: () => api().create_target(game, title, qty, cents),
+    send: () => api().create_target(game, title, qty, price),
+    done: () => { loadList("targets"); refreshBalance(); },
+  });
+});
+
+const orderRow = (r) => ({ ...r, details: [`${r.amount} × ${money(r.priceCents)}`, ...r.details], cents: r.amount * r.priceCents });
+const canPause = (r) => r.status === "active" && r.attrs != null;
+const canActivate = (r) => r.status === "paused" || (r.status === "inactive" && r.attrs != null);
+const skipped = (all, ok, verb) => (all > ok ? ` ${plural(all - ok, "selected order")} can't be ${verb} and ${all - ok === 1 ? "is" : "are"} left as is.` : "");
+
+$("#target-pause-btn").addEventListener("click", () => {
+  const all = selected("targets"), rows = all.filter(canPause);
+  openDialog({
+    title: "Pause buy orders",
+    desc: "DMarket's API can't pause buy orders, so this removes them on DMarket and keeps a copy in this app. " +
+      "Activate creates them again with the same item, quantity, price and float/phase/pattern; they join the back of the queue." + skipped(all.length, rows.length, "paused"),
+    rows: rows.map(orderRow),
+    priced: false, noun: "buy order", noRetry: true, verb: "Pause", workingVerb: "Pausing", pastVerb: "Paused",
+    send: (rs) => api().pause_targets(state.game, rs),
+    done: () => loadList("targets"),
+  });
+});
+
+$("#target-activate-btn").addEventListener("click", () => {
+  const all = selected("targets"), rows = all.filter(canActivate);
+  const total = rows.reduce((n, r) => n + r.amount * r.priceCents, 0);
+  openDialog({
+    title: "Activate buy orders",
+    desc: "Paused orders are created again on DMarket. DMarket's API can't switch an inactive order back on, so inactive ones are removed and created again; " +
+      "if that fails they stay here as paused, nothing is lost." + skipped(all.length, rows.length, "activated"),
+    warn: state.balance != null && total > state.balance ? `These orders total ${money(total)}, more than your balance (${money(state.balance)}). DMarket may keep them inactive.` : "",
+    rows: rows.map(orderRow),
+    priced: false, noun: "buy order", noRetry: true, verb: "Activate", workingVerb: "Activating", pastVerb: "Activated",
+    send: (rs) => api().activate_targets(state.game, rs),
     done: () => loadList("targets"),
   });
 });
 
 $("#target-remove-btn").addEventListener("click", () => openDialog({
   title: "Remove buy orders",
-  desc: "These buy orders will be cancelled. Nothing is bought or sold.",
-  rows: selected("targets").map((r) => ({ ...r, details: [`${r.amount} × ${money(r.priceCents)}`], cents: r.amount * r.priceCents })),
+  desc: "These buy orders will be cancelled (paused ones are deleted from this app). Nothing is bought or sold.",
+  rows: selected("targets").map(orderRow),
   priced: false, danger: true, noun: "buy order", noRetry: true, verb: "Remove", workingVerb: "Removing", pastVerb: "Removed",
   send: (rows) => api().delete_targets(rows.map((r) => r.id)),
   done: () => loadList("targets"),
@@ -513,7 +598,7 @@ $(".tabs").addEventListener("keydown", (e) => {
 $("#game").addEventListener("change", (e) => {
   state.game = e.target.value;
   Object.keys(LISTS).forEach((name) => state.loaded.delete(name));
-  $("#target-market").textContent = "";
+  $("#target-market").innerHTML = $("#target-titles").innerHTML = "";
   if (state.tab !== "history") reload(state.tab);
 });
 
@@ -559,7 +644,7 @@ async function connect(account) {
     $("#setup-reason").textContent = s.state === "missing" ? "No API keys found in .env." : `Could not connect to "${s.account}": ${s.message}`;
     return;
   }
-  $("#balance").textContent = money(s.balanceCents);
+  setBalance(s.balanceCents);
   showTab(state.tab);
 }
 $("#retry").addEventListener("click", () => connect($("#account").value || null));

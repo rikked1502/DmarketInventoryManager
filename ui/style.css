@@ -166,6 +166,12 @@ dialog h2 { margin: 0 0 4px; font-size: 18px; }
 .price-input { width: 110px; text-align: right; }
 .new-target input[type="search"] { width: 320px; }
 .new-target .qty-input { width: 64px; }
+.new-target .toolbar { margin-bottom: 6px; }
+.market-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; min-height: 28px; }
+.chip { height: 26px; padding: 0 10px; border: 1px solid var(--accent); border-radius: 999px; background: none; color: var(--accent); cursor: pointer; font-size: 12px; font-weight: 500; }
+.chip:hover { background: var(--row-selected); }
+#target-error { margin: 2px 0 10px; min-height: 1.5em; }
+.badge.paused { color: var(--warn); border-color: currentColor; }
 input[aria-invalid="true"] { border-color: var(--danger); }
 .form-error { color: var(--danger); }
 .price-input:disabled { background: transparent; border-color: transparent; color: var(--fg); opacity: 1; }

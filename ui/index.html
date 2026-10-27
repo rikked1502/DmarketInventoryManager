@@ -102,19 +102,25 @@
     </section>
 
     <section id="panel-targets" role="tabpanel" aria-labelledby="tab-targets" hidden>
-      <form class="toolbar new-target" id="target-form" novalidate>
-        <label class="field-inline"><span>New buy order</span>
-          <input id="target-title" type="search" list="target-titles" placeholder="Exact item name" required></label>
-        <datalist id="target-titles"></datalist>
-        <label class="field-inline"><span>Qty</span><input id="target-qty" class="price-input qty-input" inputmode="numeric" value="1" required></label>
-        <label class="field-inline"><span>Price each ($)</span><input id="target-price" class="price-input" inputmode="decimal" required></label>
-        <button class="btn primary" type="submit">Create…</button>
-        <span class="muted small" id="target-market" aria-live="polite"></span>
+      <form class="new-target" id="target-form" novalidate>
+        <div class="toolbar">
+          <label class="field-inline"><span>New buy order</span>
+            <input id="target-title" type="search" list="target-titles" placeholder="Start typing an item name…" autocomplete="off" required></label>
+          <datalist id="target-titles"></datalist>
+          <label class="field-inline"><span>Qty</span><input id="target-qty" class="price-input qty-input" inputmode="numeric" value="1" required></label>
+          <label class="field-inline"><span>Price each ($)</span><input id="target-price" class="price-input" inputmode="decimal" required></label>
+          <button class="btn primary" type="submit">Create…</button>
+          <span class="muted small" id="target-total"></span>
+        </div>
+        <div class="market-line small" id="target-market" aria-live="polite"></div>
+        <p class="form-error small" id="target-error" role="alert"></p>
       </form>
       <div class="toolbar">
         <label class="search"><span class="sr-only">Search buy orders</span><input id="targets-search" type="search" placeholder="Search by title…"></label>
         <span class="count" id="targets-count"></span>
         <div class="spacer"></div>
+        <button class="btn" id="target-pause-btn" type="button" disabled>Pause</button>
+        <button class="btn" id="target-activate-btn" type="button" disabled>Activate</button>
         <button class="btn danger" id="target-remove-btn" type="button" disabled>Remove</button>
       </div>
       <div class="table-wrap">

@@ -1,5 +1,6 @@
 """Minimal signed client for the DMarket trading API (https://api.dmarket.com)."""
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -11,6 +12,7 @@ from nacl.signing import SigningKey
 API = "https://api.dmarket.com"
 GAMES = {"a8db", "tf2"}  # CS2, Team Fortress 2
 BATCH_SIZE, CHUNK_PAUSE, RETRY_PAUSE = 20, 1.0, 3.0  # seconds
+PHASES = {"phase-1", "phase-2", "phase-3", "phase-4", "ruby", "emerald", "sapphire", "black-pearl"}
 
 
 class DMarketError(Exception):
@@ -77,6 +79,32 @@ def _check_game(game):
         raise DMarketError(f"Unsupported game: {game}")
 
 
+def target_attrs(cs2):
+    """A target's cs2 restrictions as create-request Attrs, or None if one can't be expressed (never widen an order)."""
+    out = {}
+    part = cs2.get("floatPart") or "FLOAT_PART_UNSPECIFIED"
+    if part != "FLOAT_PART_UNSPECIFIED":
+        value = part.removeprefix("FLOAT_PART_").replace("_", "-")  # FLOAT_PART_FN_0 -> FN-0
+        if not re.fullmatch(r"(FN|MW|FT|WW|BS)-\d", value):
+            return None
+        out["floatPartValue"] = value
+    phase = cs2.get("phase") or "PHASE_TITLE_UNSPECIFIED"
+    if phase != "PHASE_TITLE_UNSPECIFIED":
+        value = phase.removeprefix("PHASE_TITLE_").lower().replace("_", "-")
+        if value not in PHASES:
+            return None
+        out["phase"] = value
+    if cs2.get("paintSeed"):
+        out["paintSeed"] = int(cs2["paintSeed"])
+    return out
+
+
+def attrs_details(attrs):
+    return ([f"Float {attrs['floatPartValue']}"] if attrs.get("floatPartValue") else []) + \
+           ([attrs["phase"].replace("-", " ").title()] if attrs.get("phase") else []) + \
+           ([f"Pattern {attrs['paintSeed']}"] if attrs.get("paintSeed") else [])
+
+
 def _check_prices(items, id_key):
     clean = []
     for it in items:
@@ -96,18 +124,19 @@ class Client:
 
     def call(self, method, path, params=None, body=None):
         query = urllib.parse.urlencode({k: v for k, v in (params or {}).items() if v not in (None, "")})
-        if query:
-            path += "?" + query
+        query = "?" + query if query else ""
+        # Percent-encoded path params are signed decoded (DMarket docs); the query is signed as sent.
+        signed = urllib.parse.unquote(path) + query
         data = json.dumps(body, separators=(",", ":")) if body is not None else ""
         ts = str(int(time.time()))
         req = urllib.request.Request(
-            API + path,
+            API + path + query,
             data=data.encode() or None,
             method=method,
             headers={
                 "X-Api-Key": self.public_key,
                 "X-Sign-Date": ts,
-                "X-Request-Sign": "dmar ed25519 " + sign(self.secret_key, method + path + data + ts),
+                "X-Request-Sign": "dmar ed25519 " + sign(self.secret_key, method + signed + data + ts),
                 "Content-Type": "application/json",
                 "Accept": "application/json",
                 "User-Agent": "DMarketInventoryManager/1.0",
@@ -242,26 +271,51 @@ class Client:
         items = []
         for it in r.get("items") or []:
             a = it.get("attributes") or {}
+            attrs = target_attrs(a.get("cs2") or {})
             items.append({
                 "id": it.get("targetId"),
                 "title": it.get("title") or a.get("title", ""),
                 "image": a.get("image", ""),
-                "details": details(a),
+                "details": attrs_details(attrs) if attrs is not None else ["Has restrictions this app can't recreate"],
+                "attrs": attrs,  # None: can't be paused/activated here without losing a restriction
                 "amount": int(it.get("amount") or 0),
                 "priceCents": int(it.get("priceCents") or 0),
-                "active": it.get("status") == "TARGET_STATUS_ACTIVE",
+                "status": "active" if it.get("status") == "TARGET_STATUS_ACTIVE" else "inactive",
                 "createdAt": it.get("createdAt", ""),
             })
         return {"items": items, "cursor": r.get("cursor", ""), "total": int(r.get("total") or 0)}
 
-    def create_target(self, game, title, amount, price_cents):
+    def market(self, game, title):
+        """For the buy-order form: cheapest listing, highest/lowest buy order (cents) and how many buy orders exist."""
+        _check_game(game)
+        r = self.call("POST", "/marketplace-api/v1/aggregated-prices", body={
+            "filter": {"game": game, "titles": [title], "includeP2p": False}, "limit": "1"})
+        p = next((p for p in r.get("aggregatedPrices") or [] if p.get("title") == title), {})
+        low = int(_amount(p.get("offerBestPrice")) or 0) or None  # already cents here
+        r = self.call("GET", f"/marketplace-api/v1/targets-by-title/{game}/{urllib.parse.quote(title, safe='')}")
+        # Only unrestricted orders compare with ours: a low-float order can bid far above the cheapest listing.
+        plain = [o for o in r.get("orders") or [] if o.get("title") == title and o.get("price")
+                 and all(v == "any" for v in (o.get("attributes") or {}).values())]
+        prices = [int(o["price"]) for o in plain]
+        return {"low": low, "bid": max(prices, default=None), "bidLow": min(prices, default=None),
+                "orders": sum(int(o.get("amount") or 0) for o in plain), "listings": int(p.get("offerCount") or 0)}
+
+    def search_titles(self, game, text):
+        """Exact item names on DMarket starting with `text` (case-insensitive), for suggestions."""
+        _check_game(game)
+        r = self.call("GET", "/marketplace-api/v2/offers", {"gameId": game, "title": text, "limit": 100})
+        return list(dict.fromkeys((o.get("attributes") or {}).get("title") for o in r.get("items") or []))[:20]
+
+    def create_target(self, game, title, amount, price_cents, attrs=None):
         """One buy order for `amount` copies of an exact title. Returns {ok, failed} like the offer batches."""
         _check_game(game)
         amount, price_cents = int(amount), int(price_cents)
         if not title or not 1 <= amount <= 100 or price_cents <= 0:
             raise DMarketError("A buy order needs an exact item name, a quantity of 1-100 and a price above $0.00")
-        r = self.call("POST", "/marketplace-api/v1/user-targets/create", body={"GameID": game, "Targets": [
-            {"Title": title, "Amount": str(amount), "Price": {"Currency": "USD", "Amount": price_cents / 100}}]})
+        target = {"Title": title, "Amount": str(amount), "Price": {"Currency": "USD", "Amount": price_cents / 100}}
+        if attrs:
+            target["Attrs"] = attrs
+        r = self.call("POST", "/marketplace-api/v1/user-targets/create", body={"GameID": game, "Targets": [target]})
         res = (r.get("Result") or [{}])[0]
         if res.get("Successful"):
             return {"ok": 1, "failed": []}
