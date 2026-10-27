@@ -128,7 +128,7 @@ input[type="checkbox"]:disabled { cursor: not-allowed; }
 tbody tr.group td { font-weight: 500; }
 tbody tr.child td { background: var(--bg); font-size: 13px; padding-top: 4px; padding-bottom: 4px; }
 tbody tr.child.selected td { background: var(--row-selected); }
-.child-item { padding-left: 34px; color: var(--fg-muted); white-space: normal; }
+.child-item { padding-left: 34px; white-space: normal; }
 .empty td { text-align: center; color: var(--fg-muted); padding: 32px; }
 .pos { color: var(--positive); }
 .neg { color: var(--fg); }

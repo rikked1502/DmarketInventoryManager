@@ -132,7 +132,10 @@ function renderList(name, loading = false) {
     const head = `<tr class="group${on ? " selected" : ""}${ok.length ? "" : " disabled"}">` +
       `<td class="check"><input type="checkbox" data-group="${gi}" ${on && on === ok.length ? "checked" : ""} ${on && on < ok.length ? "data-mixed" : ""} ${ok.length ? "" : "disabled"} aria-label="Select all ${esc(title)}"></td>` +
       `<td>${itemCell(g[0], g.length, expander)}</td>${L.cells(g)}</tr>`;
-    const kids = open ? g.map((r, k) => itemRow(r, `<div class="child-item">${esc((r.details || []).join(" · ") || `Copy ${k + 1}`)}</div>`, "child")).join("") : "";
+    const kids = open ? g.map((r) => {
+      const sub = r.details && r.details.length ? `<span class="sub">${esc(r.details.join(" · "))}</span>` : "";
+      return itemRow(r, `<div class="child-item">${esc(r.title)}${sub}</div>`, "child");
+    }).join("") : "";
     return head + kids;
   }).join("");
   $(`#${name}-body`).innerHTML = html || `<tr class="empty"><td colspan="4">${loading ? "Loading…" : L.empty}</td></tr>`;
